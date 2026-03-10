@@ -1,0 +1,23 @@
+tailscale:
+  backend: embedded
+  hostname: homoscale
+  auth_key_env: TS_AUTHKEY
+  accept_dns: false
+  accept_routes: false
+  embedded:
+    ephemeral: false
+    verbose_logs: false
+    advertise_tags: []
+
+engine:
+  binary: mihomo
+  config_path: ~/.homoscale/engine/config.yaml
+  controller_addr: 127.0.0.1:9090
+  mixed_port: 7890
+  secret: ""
+  subscription_url: https://example.com/subscription.yaml
+  tun:
+    enable: true
+    stack: system
+    auto_route: true
+    auto_detect_interface: true

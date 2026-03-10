@@ -3,8 +3,8 @@ dist/
 tmp/
 var/
 
-homoscale.yaml
+/homoscale.yaml
 
 .DS_Store
 
-homoscale
+/homoscale
