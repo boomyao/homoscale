@@ -1,0 +1,10 @@
+bin/
+dist/
+tmp/
+var/
+
+homoscale.yaml
+
+.DS_Store
+
+homoscale
