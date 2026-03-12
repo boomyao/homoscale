@@ -3,6 +3,7 @@ package homoscale
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,23 +25,28 @@ type Config struct {
 }
 
 type TailscaleConfig struct {
-	Backend      string                  `yaml:"backend"`
-	CLIBinary    string                  `yaml:"cli_binary"`
-	StateDir     string                  `yaml:"state_dir"`
-	Socket       string                  `yaml:"socket"`
-	Hostname     string                  `yaml:"hostname"`
-	LoginServer  string                  `yaml:"login_server"`
-	AuthKeyEnv   string                  `yaml:"auth_key_env"`
-	AcceptDNS    bool                    `yaml:"accept_dns"`
-	AcceptRoutes bool                    `yaml:"accept_routes"`
-	ExtraUpFlags []string                `yaml:"extra_up_flags"`
-	Embedded     EmbeddedTailscaleConfig `yaml:"embedded"`
+	Backend          string                  `yaml:"backend"`
+	CLIBinary        string                  `yaml:"cli_binary"`
+	StateDir         string                  `yaml:"state_dir"`
+	Socket           string                  `yaml:"socket"`
+	Hostname         string                  `yaml:"hostname"`
+	LoginServer      string                  `yaml:"login_server"`
+	AuthKeyEnv       string                  `yaml:"auth_key_env"`
+	AcceptDNS        bool                    `yaml:"accept_dns"`
+	AcceptRoutes     bool                    `yaml:"accept_routes"`
+	AdvertiseRoutes  []string                `yaml:"advertise_routes"`
+	SNATSubnetRoutes *bool                   `yaml:"snat_subnet_routes"`
+	ExtraUpFlags     []string                `yaml:"extra_up_flags"`
+	Embedded         EmbeddedTailscaleConfig `yaml:"embedded"`
 }
 
 type EmbeddedTailscaleConfig struct {
-	Ephemeral     bool     `yaml:"ephemeral"`
-	VerboseLogs   bool     `yaml:"verbose_logs"`
-	AdvertiseTags []string `yaml:"advertise_tags"`
+	Ephemeral           bool     `yaml:"ephemeral"`
+	VerboseLogs         bool     `yaml:"verbose_logs"`
+	AdvertiseTags       []string `yaml:"advertise_tags"`
+	ForwardHostTCP      *bool    `yaml:"forward_host_tcp"`
+	ForwardHost         string   `yaml:"forward_host"`
+	ForwardHostTCPPorts []int    `yaml:"forward_host_tcp_ports"`
 }
 
 type EngineConfig struct {
@@ -137,9 +143,16 @@ func (c *Config) applyDefaults(baseDir string) {
 		c.Tailscale.Socket = filepath.Join(c.Tailscale.StateDir, "tailscaled.sock")
 	}
 	c.Tailscale.Socket = resolvePath(baseDir, c.Tailscale.Socket)
+	if c.Tailscale.Hostname == "" {
+		c.Tailscale.Hostname = defaultTailscaleHostname()
+	}
 	if c.Tailscale.AuthKeyEnv == "" {
 		c.Tailscale.AuthKeyEnv = "TS_AUTHKEY"
 	}
+	if c.Tailscale.SNATSubnetRoutes == nil {
+		c.Tailscale.SNATSubnetRoutes = boolPtr(true)
+	}
+	c.Tailscale.Embedded.applyDefaults()
 
 	c.Engine.applyDefaults(baseDir, c.RuntimeDir)
 }
@@ -150,6 +163,14 @@ func defaultRuntimeDir() string {
 		return filepath.Join(homeDir, ".homoscale")
 	}
 	return "./.homoscale"
+}
+
+func defaultTailscaleHostname() string {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(hostname)
 }
 
 func (c *Config) validate() error {
@@ -163,6 +184,12 @@ func (c *Config) validate() error {
 	}
 	if c.Tailscale.Socket == "" {
 		return errors.New("tailscale.socket is required")
+	}
+	if _, err := c.Tailscale.AdvertiseRoutePrefixes(); err != nil {
+		return err
+	}
+	if err := c.Tailscale.Embedded.validate(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -319,6 +346,65 @@ func (t EngineTunConfig) isSet() bool {
 
 func boolPtr(v bool) *bool {
 	return &v
+}
+
+func (c TailscaleConfig) AdvertiseRoutePrefixes() ([]netip.Prefix, error) {
+	if len(c.AdvertiseRoutes) == 0 {
+		return nil, nil
+	}
+
+	prefixes := make([]netip.Prefix, 0, len(c.AdvertiseRoutes))
+	for _, raw := range c.AdvertiseRoutes {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+
+		if prefix, err := netip.ParsePrefix(value); err == nil {
+			prefixes = append(prefixes, prefix.Masked())
+			continue
+		}
+		addr, err := netip.ParseAddr(value)
+		if err != nil {
+			return nil, fmt.Errorf("invalid tailscale.advertise_routes entry %q", raw)
+		}
+		bits := 32
+		if addr.Is6() {
+			bits = 128
+		}
+		prefixes = append(prefixes, netip.PrefixFrom(addr, bits))
+	}
+
+	return prefixes, nil
+}
+
+func prefixesToStrings(prefixes []netip.Prefix) []string {
+	if len(prefixes) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		out = append(out, prefix.String())
+	}
+	return out
+}
+
+func (c *EmbeddedTailscaleConfig) applyDefaults() {
+	if c.ForwardHostTCP == nil {
+		c.ForwardHostTCP = boolPtr(true)
+	}
+	if strings.TrimSpace(c.ForwardHost) == "" {
+		c.ForwardHost = "127.0.0.1"
+	}
+}
+
+func (c EmbeddedTailscaleConfig) validate() error {
+	for _, port := range c.ForwardHostTCPPorts {
+		if port <= 0 || port > 65535 {
+			return fmt.Errorf("invalid tailscale.embedded.forward_host_tcp_ports entry %d", port)
+		}
+	}
+	return nil
 }
 
 func applyEngineConfigPathOverride(cfg *Config, path string) error {

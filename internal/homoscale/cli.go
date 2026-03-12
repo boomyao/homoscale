@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 )
@@ -229,7 +230,7 @@ func parseConfigFlag(command string, args []string) (*Config, error) {
 
 func parseStartArgs(command string, args []string) (*Config, bool, error) {
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
-	configPath := fs.String("c", "homoscale.yaml", "config file path")
+	configPath := fs.String("c", defaultCLIConfigPath(), "config file path")
 	engineConfigPath := fs.String("engine-config", "", "local mihomo config path")
 	engineConfigPathShort := fs.String("f", "", "local mihomo config path")
 	daemonize := fs.Bool("d", false, "run homoscale in background")
@@ -250,7 +251,7 @@ func parseControlArgs(command string, args []string) (*Config, []string, error) 
 
 func parseCLIArgs(command string, args []string) (*Config, []string, error) {
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
-	configPath := fs.String("c", "homoscale.yaml", "config file path")
+	configPath := fs.String("c", defaultCLIConfigPath(), "config file path")
 	engineConfigPath := fs.String("engine-config", "", "local mihomo config path")
 	engineConfigPathShort := fs.String("f", "", "local mihomo config path")
 	if err := fs.Parse(args); err != nil {
@@ -319,51 +320,55 @@ func loadConfigWithFallback(path string, explicit bool) (*Config, error) {
 	return DefaultConfig(), nil
 }
 
+func defaultCLIConfigPath() string {
+	return filepath.Join(defaultRuntimeDir(), "homoscale.yaml")
+}
+
 func usage() error {
 	fmt.Fprintln(os.Stderr, `usage:
-  homoscale [--engine-config path|-f path] [-c homoscale.yaml] [-d|--daemon]
-  homoscale start  [--engine-config path|-f path] [-c homoscale.yaml] [-d|--daemon]
-  homoscale stop   [--engine-config path|-f path] [-c homoscale.yaml]
-  homoscale auth   [status|login|logout] [--engine-config path|-f path] [-c homoscale.yaml]
-  homoscale login  [--engine-config path|-f path] [-c homoscale.yaml]
-  homoscale logout [--engine-config path|-f path] [-c homoscale.yaml]
-  homoscale status [--engine-config path|-f path] [-c homoscale.yaml]
-  homoscale mode   [--engine-config path|-f path] [-c homoscale.yaml] <rule|global|direct>
-  homoscale select [--engine-config path|-f path] [-c homoscale.yaml] [group] [proxy]
-  homoscale current [--engine-config path|-f path] [-c homoscale.yaml]
-  homoscale rules  [--engine-config path|-f path] [-c homoscale.yaml]
+  homoscale [--engine-config path|-f path] [-c path] [-d|--daemon]
+  homoscale start  [--engine-config path|-f path] [-c path] [-d|--daemon]
+  homoscale stop   [--engine-config path|-f path] [-c path]
+  homoscale auth   [status|login|logout] [--engine-config path|-f path] [-c path]
+  homoscale login  [--engine-config path|-f path] [-c path]
+  homoscale logout [--engine-config path|-f path] [-c path]
+  homoscale status [--engine-config path|-f path] [-c path]
+  homoscale mode   [--engine-config path|-f path] [-c path] <rule|global|direct>
+  homoscale select [--engine-config path|-f path] [-c path] [group] [proxy]
+  homoscale current [--engine-config path|-f path] [-c path]
+  homoscale rules  [--engine-config path|-f path] [-c path]
   homoscale version [-json]`)
 	return errors.New("unknown command")
 }
 
 func authUsage() error {
 	fmt.Fprintln(os.Stderr, `usage:
-  homoscale auth [status|login|logout] [--engine-config path|-f path] [-c homoscale.yaml]`)
+  homoscale auth [status|login|logout] [--engine-config path|-f path] [-c path]`)
 	return errors.New("unknown auth command")
 }
 
 func modeUsage() error {
 	fmt.Fprintln(os.Stderr, `usage:
-  homoscale mode [--engine-config path|-f path] [-c homoscale.yaml] <rule|global|direct>`)
+  homoscale mode [--engine-config path|-f path] [-c path] <rule|global|direct>`)
 	return errors.New("invalid mode command")
 }
 
 func selectUsage() error {
 	fmt.Fprintln(os.Stderr, `usage:
-  homoscale select [--engine-config path|-f path] [-c homoscale.yaml]
-  homoscale select [--engine-config path|-f path] [-c homoscale.yaml] <group>
-  homoscale select [--engine-config path|-f path] [-c homoscale.yaml] <group> <proxy>`)
+  homoscale select [--engine-config path|-f path] [-c path]
+  homoscale select [--engine-config path|-f path] [-c path] <group>
+  homoscale select [--engine-config path|-f path] [-c path] <group> <proxy>`)
 	return errors.New("invalid select command")
 }
 
 func currentUsage() error {
 	fmt.Fprintln(os.Stderr, `usage:
-  homoscale current [--engine-config path|-f path] [-c homoscale.yaml]`)
+  homoscale current [--engine-config path|-f path] [-c path]`)
 	return errors.New("invalid current command")
 }
 
 func rulesUsage() error {
 	fmt.Fprintln(os.Stderr, `usage:
-  homoscale rules [--engine-config path|-f path] [-c homoscale.yaml]`)
+  homoscale rules [--engine-config path|-f path] [-c path]`)
 	return errors.New("invalid rules command")
 }

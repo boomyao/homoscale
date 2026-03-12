@@ -31,8 +31,9 @@ Embedded Tailscale:
 ```yaml
 tailscale:
   backend: embedded
-  hostname: homoscale
   auth_key_env: TS_AUTHKEY
+  advertise_routes:
+    - 192.168.0.0/24
 
 engine:
   binary: mihomo
@@ -54,8 +55,9 @@ External Tailscale:
 tailscale:
   backend: external
   cli_binary: tailscale
-  hostname: homoscale
   auth_key_env: TS_AUTHKEY
+  advertise_routes:
+    - 192.168.0.0/24
 
 engine:
   binary: mihomo
@@ -157,7 +159,33 @@ go run ./cmd/homoscale rules
 
 If you use the external Tailscale backend, start `tailscaled` yourself first and point `tailscale.socket` at the live daemon socket.
 
-If `homoscale.yaml` is absent and you did not pass `-c`, `homoscale` falls back to built-in defaults:
+If `tailscale.hostname` is omitted, `homoscale` uses the local system hostname automatically. Set it explicitly only when you want a fixed custom node name.
+
+If you want other tailnet devices to reach resources behind the homoscale host, set `tailscale.advertise_routes` to the host-side CIDRs you want this node to route. `homoscale` applies these routes for both embedded and external Tailscale backends. `tailscale.snat_subnet_routes` defaults to `true`, which matches the default Tailscale subnet-router behavior.
+
+If you use the embedded Tailscale backend, host TCP forwarding is enabled by default. That means `ssh user@<node-name>` or `<node-name>:<port>` reaches services running on the host machine itself by forwarding matching ports to `tailscale.embedded.forward_host` (default `127.0.0.1`). If `tailscale.embedded.forward_host_tcp_ports` is empty, every TCP port is forwarded.
+
+If you want to limit or disable that behavior, configure the embedded block explicitly:
+
+```yaml
+tailscale:
+  embedded:
+    forward_host_tcp: false
+```
+
+Or restrict it to selected host ports:
+
+```yaml
+tailscale:
+  embedded:
+    forward_host_tcp_ports:
+      - 22
+      - 3000
+```
+
+If your tailnet requires route approval, approve the advertised routes in the Tailscale admin console before expecting other nodes to use them.
+
+If you do not pass `-c`, `homoscale` looks for `~/.homoscale/homoscale.yaml`. If that file is absent, it falls back to built-in defaults:
 
 - `runtime_dir: ~/.homoscale`
 - `tailscale.backend: embedded`

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"tailscale.com/client/local"
+	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tsnet"
 )
@@ -32,11 +33,12 @@ type AuthStatus struct {
 }
 
 type authRuntimeSnapshot struct {
-	PID          int         `json:"pid"`
-	Status       *AuthStatus `json:"status"`
-	LoopbackAddr string      `json:"loopback_addr,omitempty"`
-	ProxyUser    string      `json:"proxy_user,omitempty"`
-	ProxyPass    string      `json:"proxy_pass,omitempty"`
+	PID           int               `json:"pid"`
+	Status        *AuthStatus       `json:"status"`
+	LoopbackAddr  string            `json:"loopback_addr,omitempty"`
+	ProxyUser     string            `json:"proxy_user,omitempty"`
+	ProxyPass     string            `json:"proxy_pass,omitempty"`
+	MagicDNSHosts map[string]string `json:"magic_dns_hosts,omitempty"`
 }
 
 func ReadAuthStatus(cfg *Config) (*AuthStatus, error) {
@@ -113,12 +115,20 @@ func loginEmbeddedTailscale(ctx context.Context, cfg *Config, logWriter io.Write
 	if err != nil {
 		return fmt.Errorf("tailscale login failed: %w", err)
 	}
+	localClient, err := server.LocalClient()
+	if err != nil {
+		return fmt.Errorf("start embedded tailscale client: %w", err)
+	}
+	if err := configureEmbeddedAdvertiseRoutes(ctx, localClient, cfg); err != nil {
+		return err
+	}
 
 	return printAuthSummary(logWriter, authStatusFromIPN("embedded", "", status), "logged in")
 }
 
 func startEmbeddedTailscaleRuntime(ctx context.Context, cfg *Config, logWriter io.Writer) (io.Closer, error) {
 	server := newEmbeddedTailscaleServer(cfg, logWriter)
+	forwarder := newEmbeddedHostTCPForwarder(cfg)
 
 	status, err := server.Up(ctx)
 	if err != nil {
@@ -131,11 +141,18 @@ func startEmbeddedTailscaleRuntime(ctx context.Context, cfg *Config, logWriter i
 		_ = server.Close()
 		return nil, fmt.Errorf("start embedded tailscale client: %w", err)
 	}
+	if err := configureEmbeddedAdvertiseRoutes(ctx, localClient, cfg); err != nil {
+		_ = server.Close()
+		return nil, err
+	}
 
 	runtime := &embeddedTailscaleRuntime{
 		server:      server,
 		localClient: localClient,
 		statusPath:  tailscaleRuntimeStatusPath(cfg),
+	}
+	if forwarder != nil {
+		runtime.deregister = forwarder.register(server)
 	}
 	loopbackAddr, proxyCred, _, err := server.Loopback()
 	if err != nil {
@@ -144,10 +161,15 @@ func startEmbeddedTailscaleRuntime(ctx context.Context, cfg *Config, logWriter i
 	}
 	initialStatus := authStatusFromIPN("embedded", "", status)
 	runtime.snapshot = authRuntimeSnapshot{
-		Status:       initialStatus,
-		LoopbackAddr: loopbackAddr,
-		ProxyUser:    "tsnet",
-		ProxyPass:    proxyCred,
+		Status:        initialStatus,
+		LoopbackAddr:  loopbackAddr,
+		ProxyUser:     "tsnet",
+		ProxyPass:     proxyCred,
+		MagicDNSHosts: magicDNSHostsFromStatus(status),
+	}
+	if fullStatus, err := localClient.Status(ctx); err == nil {
+		runtime.snapshot.Status = authStatusFromIPN("embedded", "", fullStatus)
+		runtime.snapshot.MagicDNSHosts = magicDNSHostsFromStatus(fullStatus)
 	}
 	if err := writeRuntimeAuthStatus(cfg, runtime.snapshot); err != nil {
 		_ = server.Close()
@@ -246,6 +268,35 @@ func newEmbeddedTailscaleServer(cfg *Config, logWriter io.Writer) *tsnet.Server 
 	return server
 }
 
+func configureEmbeddedAdvertiseRoutes(ctx context.Context, localClient *local.Client, cfg *Config) error {
+	if localClient == nil {
+		return nil
+	}
+
+	routes, err := cfg.Tailscale.AdvertiseRoutePrefixes()
+	if err != nil {
+		return err
+	}
+	if len(routes) == 0 {
+		return nil
+	}
+
+	maskedPrefs := &ipn.MaskedPrefs{
+		Prefs: ipn.Prefs{
+			AdvertiseRoutes: routes,
+		},
+		AdvertiseRoutesSet: true,
+	}
+	if cfg.Tailscale.SNATSubnetRoutes != nil {
+		maskedPrefs.Prefs.NoSNAT = !*cfg.Tailscale.SNATSubnetRoutes
+		maskedPrefs.NoSNATSet = true
+	}
+	if _, err := localClient.EditPrefs(ctx, maskedPrefs); err != nil {
+		return fmt.Errorf("configure embedded tailscale advertised routes: %w", err)
+	}
+	return nil
+}
+
 func authStatusFromIPN(backend, socket string, status *ipnstate.Status) *AuthStatus {
 	if status == nil {
 		return &AuthStatus{Backend: backend, Socket: socket}
@@ -287,6 +338,7 @@ type embeddedTailscaleRuntime struct {
 	localClient *local.Client
 	statusPath  string
 	snapshot    authRuntimeSnapshot
+	deregister  func()
 }
 
 func (r *embeddedTailscaleRuntime) Close() error {
@@ -294,6 +346,9 @@ func (r *embeddedTailscaleRuntime) Close() error {
 		return nil
 	}
 	removeRuntimeAuthStatus(r.statusPath)
+	if r.deregister != nil {
+		r.deregister()
+	}
 	if r.server == nil {
 		return nil
 	}
@@ -310,11 +365,12 @@ func (r *embeddedTailscaleRuntime) watchStatus(ctx context.Context, cfg *Config)
 			removeRuntimeAuthStatus(r.statusPath)
 			return
 		case <-ticker.C:
-			status, err := r.localClient.StatusWithoutPeers(ctx)
+			status, err := r.localClient.Status(ctx)
 			if err != nil {
 				continue
 			}
 			r.snapshot.Status = authStatusFromIPN("embedded", "", status)
+			r.snapshot.MagicDNSHosts = magicDNSHostsFromStatus(status)
 			_ = writeRuntimeAuthStatus(cfg, r.snapshot)
 		}
 	}

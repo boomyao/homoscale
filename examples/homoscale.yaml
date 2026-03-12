@@ -1,9 +1,10 @@
 tailscale:
   backend: embedded
-  hostname: homoscale
   auth_key_env: TS_AUTHKEY
   accept_dns: false
   accept_routes: false
+  advertise_routes:
+    - 192.168.0.0/24
   embedded:
     ephemeral: false
     verbose_logs: false

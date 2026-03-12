@@ -56,6 +56,8 @@ func StartEngine(ctx context.Context, cfg *Config, logWriter io.Writer) error {
 		_ = terminateProcess(cmd.Process)
 		return err
 	}
+	resolverCloser := installSystemResolver(cfg, logWriter)
+	defer resolverCloser.Close()
 	if logWriter != nil {
 		if createdConfig {
 			_, _ = fmt.Fprintf(logWriter, "generated default engine config at %s\n", cfg.Engine.ConfigPath)

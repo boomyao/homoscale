@@ -1,10 +1,11 @@
 tailscale:
   backend: external
   cli_binary: tailscale
-  hostname: homoscale
   auth_key_env: TS_AUTHKEY
   accept_dns: false
   accept_routes: false
+  advertise_routes:
+    - 192.168.0.0/24
 
 engine:
   binary: mihomo

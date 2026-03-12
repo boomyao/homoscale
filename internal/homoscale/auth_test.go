@@ -3,12 +3,15 @@ package homoscale
 import (
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/types/key"
 )
 
 func TestLoadConfigAllowsMinimalAuthAndProxyFields(t *testing.T) {
@@ -58,6 +61,29 @@ func TestAuthStatusFromIPN(t *testing.T) {
 	}
 }
 
+func TestMagicDNSHostsFromStatus(t *testing.T) {
+	status := &ipnstate.Status{
+		Self: &ipnstate.PeerStatus{
+			DNSName:      "self.foo.ts.net.",
+			TailscaleIPs: []netip.Addr{netip.MustParseAddr("fd7a:115c:a1e0::1"), netip.MustParseAddr("100.64.0.10")},
+		},
+		Peer: map[key.NodePublic]*ipnstate.PeerStatus{
+			key.NodePublic{}: {
+				DNSName:      "peer.foo.ts.net.",
+				TailscaleIPs: []netip.Addr{netip.MustParseAddr("100.64.0.20")},
+			},
+		},
+	}
+
+	hosts := magicDNSHostsFromStatus(status)
+	if got := hosts["self.foo.ts.net"]; got != "100.64.0.10" {
+		t.Fatalf("unexpected self host mapping: %q", got)
+	}
+	if got := hosts["peer.foo.ts.net"]; got != "100.64.0.20" {
+		t.Fatalf("unexpected peer host mapping: %q", got)
+	}
+}
+
 func TestLoadConfigSupportsLegacyMihomoBlock(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "homoscale.yaml")
@@ -78,7 +104,10 @@ func TestLoadConfigSupportsLegacyMihomoBlock(t *testing.T) {
 }
 
 func TestLoadConfigWithFallbackUsesDefaultsForImplicitMissingConfig(t *testing.T) {
-	cfg, err := loadConfigWithFallback("homoscale.yaml", false)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg, err := loadConfigWithFallback(defaultCLIConfigPath(), false)
 	if err != nil {
 		t.Fatalf("load config with fallback: %v", err)
 	}
@@ -90,6 +119,17 @@ func TestLoadConfigWithFallbackUsesDefaultsForImplicitMissingConfig(t *testing.T
 	}
 	if !strings.Contains(cfg.RuntimeDir, ".homoscale") {
 		t.Fatalf("unexpected default runtime dir: %s", cfg.RuntimeDir)
+	}
+}
+
+func TestDefaultCLIConfigPathUsesHomeRuntimeDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := defaultCLIConfigPath()
+	want := filepath.Join(home, ".homoscale", "homoscale.yaml")
+	if got != want {
+		t.Fatalf("unexpected default cli config path: got %q want %q", got, want)
 	}
 }
 
@@ -135,8 +175,170 @@ func TestDefaultConfigReadsSubscriptionURLFromEnv(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigUsesSystemHostname(t *testing.T) {
+	want, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("read system hostname: %v", err)
+	}
+	want = strings.TrimSpace(want)
+
+	cfg := DefaultConfig()
+	if cfg.Tailscale.Hostname != want {
+		t.Fatalf("unexpected default hostname: got %q want %q", cfg.Tailscale.Hostname, want)
+	}
+}
+
+func TestLoadConfigPreservesExplicitHostname(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "homoscale.yaml")
+	config := []byte(`tailscale:
+  hostname: custom-node
+`)
+	if err := os.WriteFile(path, config, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Tailscale.Hostname != "custom-node" {
+		t.Fatalf("unexpected configured hostname: %s", cfg.Tailscale.Hostname)
+	}
+}
+
+func TestLoadConfigParsesAdvertiseRoutes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "homoscale.yaml")
+	config := []byte(`tailscale:
+  advertise_routes:
+    - 192.168.50.0/24
+    - fd7a:115c:a1e0::1
+  embedded:
+    forward_host_tcp: true
+    forward_host: 127.0.0.1
+    forward_host_tcp_ports:
+      - 22
+      - 3000
+`)
+	if err := os.WriteFile(path, config, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	got, err := cfg.Tailscale.AdvertiseRoutePrefixes()
+	if err != nil {
+		t.Fatalf("parse advertise routes: %v", err)
+	}
+	want := []netip.Prefix{
+		netip.MustParsePrefix("192.168.50.0/24"),
+		netip.MustParsePrefix("fd7a:115c:a1e0::1/128"),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected advertise routes: got %v want %v", got, want)
+	}
+	if cfg.Tailscale.SNATSubnetRoutes == nil || !*cfg.Tailscale.SNATSubnetRoutes {
+		t.Fatalf("expected snat_subnet_routes default to true")
+	}
+	if cfg.Tailscale.Embedded.ForwardHostTCP == nil || !*cfg.Tailscale.Embedded.ForwardHostTCP {
+		t.Fatalf("expected forward_host_tcp to be enabled")
+	}
+	if cfg.Tailscale.Embedded.ForwardHost != "127.0.0.1" {
+		t.Fatalf("unexpected forward_host: %s", cfg.Tailscale.Embedded.ForwardHost)
+	}
+	if !reflect.DeepEqual(cfg.Tailscale.Embedded.ForwardHostTCPPorts, []int{22, 3000}) {
+		t.Fatalf("unexpected forward_host_tcp_ports: %v", cfg.Tailscale.Embedded.ForwardHostTCPPorts)
+	}
+}
+
+func TestLoadConfigRejectsInvalidAdvertiseRoutes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "homoscale.yaml")
+	config := []byte(`tailscale:
+  advertise_routes:
+    - definitely-not-a-route
+`)
+	if err := os.WriteFile(path, config, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected invalid advertise_routes error")
+	}
+	if !strings.Contains(err.Error(), "tailscale.advertise_routes") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadConfigRejectsInvalidEmbeddedForwardPort(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "homoscale.yaml")
+	config := []byte(`tailscale:
+  embedded:
+    forward_host_tcp: true
+    forward_host_tcp_ports:
+      - 70000
+`)
+	if err := os.WriteFile(path, config, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected invalid forward_host_tcp_ports error")
+	}
+	if !strings.Contains(err.Error(), "forward_host_tcp_ports") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDefaultConfigEnablesEmbeddedHostTCPForwarding(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Tailscale.Embedded.ForwardHostTCP == nil || !*cfg.Tailscale.Embedded.ForwardHostTCP {
+		t.Fatal("expected embedded.forward_host_tcp to default to true")
+	}
+	if cfg.Tailscale.Embedded.ForwardHost != "127.0.0.1" {
+		t.Fatalf("unexpected default forward_host: %s", cfg.Tailscale.Embedded.ForwardHost)
+	}
+}
+
+func TestTailscaleUpArgsIncludesAdvertiseRoutes(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Tailscale.Socket = "/tmp/tailscaled.sock"
+	cfg.Tailscale.Hostname = "host-a"
+	cfg.Tailscale.AuthKeyEnv = "TS_AUTHKEY"
+	cfg.Tailscale.AcceptRoutes = true
+	cfg.Tailscale.AdvertiseRoutes = []string{"192.168.50.0/24", "10.10.10.7"}
+	cfg.Tailscale.SNATSubnetRoutes = boolPtr(false)
+	t.Setenv("TS_AUTHKEY", "tskey-auth-k8s")
+
+	args, err := tailscaleUpArgs(cfg)
+	if err != nil {
+		t.Fatalf("build tailscale up args: %v", err)
+	}
+
+	got := strings.Join(args, " ")
+	if !strings.Contains(got, "--accept-routes") {
+		t.Fatalf("missing accept-routes flag: %v", args)
+	}
+	if !strings.Contains(got, "--advertise-routes=192.168.50.0/24,10.10.10.7/32") {
+		t.Fatalf("missing advertise-routes flag: %v", args)
+	}
+	if !strings.Contains(got, "--snat-subnet-routes=false") {
+		t.Fatalf("missing snat-subnet-routes flag: %v", args)
+	}
+	if !strings.Contains(got, "--auth-key tskey-auth-k8s") {
+		t.Fatalf("missing auth-key flag: %v", args)
+	}
+}
+
 func TestParseConfigFlagSupportsEngineConfigOverride(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("HOME", dir)
 	configPath := filepath.Join(dir, "homoscale.yaml")
 	engineConfigPath := filepath.Join(dir, "mihomo.yaml")
 	engineConfig := []byte(`mixed-port: 17890
@@ -205,6 +407,53 @@ tun:
 	}
 	if restoredCfg.Engine.Tun.Enable == nil || *restoredCfg.Engine.Tun.Enable {
 		t.Fatalf("expected restored tun enable to follow imported source")
+	}
+}
+
+func TestParseConfigFlagUsesDefaultHomeConfigPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	configPath := defaultCLIConfigPath()
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir default config dir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("engine:\n  controller_addr: 127.0.0.1:19091\n"), 0o644); err != nil {
+		t.Fatalf("write default config: %v", err)
+	}
+
+	cfg, err := parseConfigFlag("status", nil)
+	if err != nil {
+		t.Fatalf("parse config flag: %v", err)
+	}
+	if cfg.Engine.ControllerAddr != "127.0.0.1:19091" {
+		t.Fatalf("unexpected controller addr from default home config: %s", cfg.Engine.ControllerAddr)
+	}
+}
+
+func TestParseConfigFlagPrefersExplicitConfigPathOverDefaultHomeConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	defaultPath := defaultCLIConfigPath()
+	if err := os.MkdirAll(filepath.Dir(defaultPath), 0o755); err != nil {
+		t.Fatalf("mkdir default config dir: %v", err)
+	}
+	if err := os.WriteFile(defaultPath, []byte("engine:\n  controller_addr: 127.0.0.1:19091\n"), 0o644); err != nil {
+		t.Fatalf("write default config: %v", err)
+	}
+
+	customPath := filepath.Join(home, "custom.yaml")
+	if err := os.WriteFile(customPath, []byte("engine:\n  controller_addr: 127.0.0.1:29091\n"), 0o644); err != nil {
+		t.Fatalf("write custom config: %v", err)
+	}
+
+	cfg, err := parseConfigFlag("status", []string{"-c", customPath})
+	if err != nil {
+		t.Fatalf("parse config flag with explicit config: %v", err)
+	}
+	if cfg.Engine.ControllerAddr != "127.0.0.1:29091" {
+		t.Fatalf("unexpected controller addr from explicit config: %s", cfg.Engine.ControllerAddr)
 	}
 }
 

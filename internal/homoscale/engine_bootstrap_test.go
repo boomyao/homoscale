@@ -144,11 +144,12 @@ func TestEnsureEngineConfigWritesEmbeddedTailscaleProxy(t *testing.T) {
 		t.Fatalf("mkdir state dir: %v", err)
 	}
 	if err := writeRuntimeAuthStatus(cfg, authRuntimeSnapshot{
-		PID:          os.Getpid(),
-		Status:       &AuthStatus{Backend: "embedded", LoggedIn: true, MagicDNSSuffix: "tail123.ts.net"},
-		LoopbackAddr: "127.0.0.1:16666",
-		ProxyUser:    "tsnet",
-		ProxyPass:    "secret-proxy",
+		PID:           os.Getpid(),
+		Status:        &AuthStatus{Backend: "embedded", LoggedIn: true, MagicDNSSuffix: "tail123.ts.net"},
+		LoopbackAddr:  "127.0.0.1:16666",
+		ProxyUser:     "tsnet",
+		ProxyPass:     "secret-proxy",
+		MagicDNSHosts: map[string]string{"peer.tail123.ts.net": "100.64.0.20"},
 	}); err != nil {
 		t.Fatalf("write runtime auth snapshot: %v", err)
 	}
@@ -168,6 +169,12 @@ func TestEnsureEngineConfigWritesEmbeddedTailscaleProxy(t *testing.T) {
 	text := string(data)
 	if !strings.Contains(text, "name: TAILSCALE") {
 		t.Fatalf("missing tailscale proxy in config:\n%s", text)
+	}
+	if !strings.Contains(text, "use-hosts: true") {
+		t.Fatalf("missing dns.use-hosts in config:\n%s", text)
+	}
+	if !strings.Contains(text, "peer.tail123.ts.net: 100.64.0.20") {
+		t.Fatalf("missing MagicDNS hosts mapping in config:\n%s", text)
 	}
 	if !strings.Contains(text, "server: 127.0.0.1") {
 		t.Fatalf("missing tailscale proxy server in config:\n%s", text)
@@ -346,9 +353,10 @@ rules:
 			LoggedIn:       true,
 			MagicDNSSuffix: "tail123.ts.net",
 		},
-		LoopbackAddr: "127.0.0.1:16666",
-		ProxyUser:    "tsnet",
-		ProxyPass:    "secret-proxy",
+		LoopbackAddr:  "127.0.0.1:16666",
+		ProxyUser:     "tsnet",
+		ProxyPass:     "secret-proxy",
+		MagicDNSHosts: map[string]string{"peer.tail123.ts.net": "100.64.0.20"},
 	}); err != nil {
 		t.Fatalf("write runtime auth snapshot: %v", err)
 	}
@@ -374,6 +382,12 @@ rules:
 	}
 	if !strings.Contains(text, "name: TAILSCALE") {
 		t.Fatalf("missing tailscale proxy in derived config:\n%s", text)
+	}
+	if !strings.Contains(text, "use-hosts: true") {
+		t.Fatalf("missing dns.use-hosts in derived config:\n%s", text)
+	}
+	if !strings.Contains(text, "peer.tail123.ts.net: 100.64.0.20") {
+		t.Fatalf("missing MagicDNS hosts mapping in derived config:\n%s", text)
 	}
 	if !strings.Contains(text, "DOMAIN-SUFFIX,tail123.ts.net,TAILSCALE") {
 		t.Fatalf("missing tailscale domain rule in derived config:\n%s", text)

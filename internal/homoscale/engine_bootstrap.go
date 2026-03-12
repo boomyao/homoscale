@@ -49,6 +49,7 @@ func ensureEngineConfig(cfg *Config) (bool, error) {
 			"dns-hijack":            append([]string(nil), cfg.Engine.Tun.DNSHijack...),
 		}
 	}
+	injectTailscaleDNS(payload, cfg)
 	tailscaleProxy, tailscaleRules, err := buildTailscaleRouting(cfg)
 	if err != nil {
 		return false, err
@@ -152,6 +153,7 @@ func writeDerivedEngineConfig(cfg *Config) (bool, error) {
 			"dns-hijack":            append([]string(nil), cfg.Engine.Tun.DNSHijack...),
 		}
 	}
+	injectTailscaleDNS(payload, cfg)
 
 	tailscaleProxy, tailscaleRules, err := buildTailscaleRouting(cfg)
 	if err != nil {
@@ -296,6 +298,58 @@ func injectTailscaleRules(payload map[string]any, rules []string) {
 		filtered = append(filtered, rule)
 	}
 	payload["rules"] = append(append([]string(nil), rules...), filtered...)
+}
+
+func injectTailscaleDNS(payload map[string]any, cfg *Config) {
+	hosts := tailscaleMagicDNSHosts(cfg)
+	if len(hosts) == 0 {
+		return
+	}
+
+	dnsSection := ensureStringMap(payload, "dns")
+	dnsSection["use-hosts"] = true
+
+	hostSection := ensureStringMap(payload, "hosts")
+	for host, ip := range hosts {
+		hostSection[host] = ip
+	}
+}
+
+func tailscaleMagicDNSHosts(cfg *Config) map[string]string {
+	if snapshot, ok := readRuntimeAuthSnapshot(cfg); ok && len(snapshot.MagicDNSHosts) > 0 {
+		out := make(map[string]string, len(snapshot.MagicDNSHosts))
+		for host, ip := range snapshot.MagicDNSHosts {
+			host = strings.TrimSpace(host)
+			ip = strings.TrimSpace(ip)
+			if host == "" || ip == "" {
+				continue
+			}
+			out[host] = ip
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	if cfg.Tailscale.Backend != "external" {
+		return nil
+	}
+	status, err := tailscaleLocalStatusWithPeers(cfg)
+	if err != nil {
+		return nil
+	}
+	return magicDNSHostsFromStatus(status)
+}
+
+func ensureStringMap(payload map[string]any, key string) map[string]any {
+	if payload == nil {
+		return map[string]any{}
+	}
+	if existing, ok := payload[key].(map[string]any); ok && existing != nil {
+		return existing
+	}
+	out := map[string]any{}
+	payload[key] = out
+	return out
 }
 
 func stringSlice(value any) []string {
