@@ -1,0 +1,4 @@
+# ninja log v5
+0	31	1773297376493182696	CMakeFiles/homoscale_jni.dir/homoscale_jni.c.o	2c77a5f630fea778
+32	81	1773297376542078268	/Users/boomyao/.codex/worktrees/d8a8/homoscale/android/app/build/intermediates/cxx/Debug/381b2i39/obj/x86/libhomoscale_jni.so	4019750e47865522
+0	7	0	clean	1ba1f6e872f1e054

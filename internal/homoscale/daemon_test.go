@@ -28,3 +28,27 @@ func TestParseStartArgsSupportsDaemonFlag(t *testing.T) {
 		t.Fatal("expected daemonize=true")
 	}
 }
+
+func TestEnsureDaemonSupportedOnAndroid(t *testing.T) {
+	previousGOOS := runtimeGOOS
+	runtimeGOOS = "android"
+	t.Cleanup(func() {
+		runtimeGOOS = previousGOOS
+	})
+
+	if err := ensureDaemonSupported(); err == nil {
+		t.Fatal("expected Android daemon mode to be rejected")
+	}
+}
+
+func TestEnsureDaemonSupportedOffAndroid(t *testing.T) {
+	previousGOOS := runtimeGOOS
+	runtimeGOOS = "linux"
+	t.Cleanup(func() {
+		runtimeGOOS = previousGOOS
+	})
+
+	if err := ensureDaemonSupported(); err != nil {
+		t.Fatalf("expected non-Android daemon mode to be allowed: %v", err)
+	}
+}

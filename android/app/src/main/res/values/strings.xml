@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">homoscale</string>
+    <string name="app_title">homoscale Android</string>
+    <string name="runtime_summary">This APK embeds the homoscale runtime as a Go shared library, bundles Mihomo, and uses Android VpnService to hand a real TUN file descriptor to the core. Starting the service will request VPN permission and route device traffic through Mihomo.</string>
+    <string name="bundled_mihomo_label">Bundled Mihomo</string>
+    <string name="subscription_label">Subscription URL (optional)</string>
+    <string name="subscription_hint">https://example.com/subscription.yaml</string>
+    <string name="ipv6_toggle">Enable IPv6 (experimental on some proxy nodes)</string>
+    <string name="write_config">Write Config</string>
+    <string name="show_version">Version</string>
+    <string name="start_service">Start Service</string>
+    <string name="stop_service">Stop Service</string>
+    <string name="read_status">Read Status</string>
+    <string name="output_label">Output</string>
+    <string name="notification_channel_name">homoscale runtime</string>
+    <string name="notification_title">homoscale service</string>
+    <string name="notification_idle">Idle</string>
+    <string name="notification_running">Running</string>
+    <string name="notification_stopped">Stopped</string>
+</resources>

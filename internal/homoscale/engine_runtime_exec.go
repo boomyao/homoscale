@@ -1,23 +1,16 @@
+//go:build !android
+
 package homoscale
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
-	"strings"
-	"syscall"
 	"time"
 )
-
-type ProcessState struct {
-	PID     int    `json:"pid"`
-	Command string `json:"command"`
-}
 
 func StartEngine(ctx context.Context, cfg *Config, logWriter io.Writer) error {
 	if err := cfg.EnsureRuntimeDirs(); err != nil {
@@ -37,12 +30,17 @@ func StartEngine(ctx context.Context, cfg *Config, logWriter io.Writer) error {
 		return fmt.Errorf("homoscale engine is already running (pid %d)", state.PID)
 	}
 
-	cmd := exec.CommandContext(ctx, cfg.Engine.Binary, buildEngineArgs(cfg)...)
+	cmd, extraFiles, err := buildEngineCommand(ctx, cfg)
+	if err != nil {
+		return err
+	}
 	cmd.Stdout = logWriter
 	cmd.Stderr = logWriter
 	if err := cmd.Start(); err != nil {
+		closeFiles(extraFiles)
 		return fmt.Errorf("start homoscale engine: %w", err)
 	}
+	closeFiles(extraFiles)
 	if err := writeProcessState(cfg.Engine.StateFile, ProcessState{
 		PID:     cmd.Process.Pid,
 		Command: cmd.String(),
@@ -104,16 +102,29 @@ func buildEngineArgs(cfg *Config) []string {
 	return args
 }
 
-func waitForEngineReady(cfg *Config, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		status := ReadEngineStatus(cfg)
-		if status.Reachable {
-			return nil
-		}
-		time.Sleep(300 * time.Millisecond)
+func buildEngineCommand(ctx context.Context, cfg *Config) (*exec.Cmd, []*os.File, error) {
+	cmd := exec.CommandContext(ctx, cfg.Engine.Binary, buildEngineArgs(cfg)...)
+	extraFiles, err := buildEngineExtraFiles(cfg)
+	if err != nil {
+		return nil, nil, err
 	}
-	return fmt.Errorf("homoscale engine did not become ready within %s", timeout)
+	if len(extraFiles) > 0 {
+		cmd.ExtraFiles = extraFiles
+	}
+	return cmd, extraFiles, nil
+}
+
+func buildEngineExtraFiles(cfg *Config) ([]*os.File, error) {
+	if cfg == nil || cfg.Engine.Tun.FileDescriptor == 0 {
+		return nil, nil
+	}
+	if cfg.Engine.Tun.FileDescriptor != 3 {
+		return nil, fmt.Errorf("unsupported engine.tun.file_descriptor %d: only 3 is supported", cfg.Engine.Tun.FileDescriptor)
+	}
+	if cfg.Engine.Tun.RuntimeFile == nil {
+		return nil, fmt.Errorf("engine.tun.file_descriptor is configured but no runtime tun file was provided")
+	}
+	return []*os.File{cfg.Engine.Tun.RuntimeFile}, nil
 }
 
 func terminateProcess(process *os.Process) error {
@@ -141,81 +152,23 @@ func terminateProcess(process *os.Process) error {
 	return nil
 }
 
-func readProcessState(path string) (ProcessState, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ProcessState{}, false
-	}
-	var state ProcessState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return ProcessState{}, false
-	}
-	if state.PID == 0 {
-		return ProcessState{}, false
-	}
-	return state, true
-}
-
-func readEngineProcessState(cfg *Config) *ProcessState {
-	state, ok := readProcessState(cfg.Engine.StateFile)
-	if !ok {
-		return nil
-	}
-	return &state
-}
-
-func writeProcessState(path string, state ProcessState) error {
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal process state: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write process state %s: %w", path, err)
-	}
-	return nil
-}
-
-func removeProcessState(path string) {
-	_ = os.Remove(path)
-}
-
-func processRunning(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = process.Signal(syscall.Signal(0))
-	return err == nil
-}
-
-func controllerURL(cfg *Config, path string) string {
-	endpoint := cfg.Engine.ControllerAddr
-	if endpoint == "" {
-		endpoint = defaultEngineControllerAddr
-	}
-	if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
-		endpoint = "http://" + endpoint
-	}
-	endpoint = strings.TrimRight(endpoint, "/")
-	return endpoint + path
-}
-
-func enginePing(cfg *Config) error {
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(controllerURL(cfg, "/version"))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("engine status: %s", resp.Status)
-	}
-	return nil
-}
-
 func resolveBinaryPath(binary string) (string, error) {
 	return exec.LookPath(binary)
+}
+
+func closeFiles(files []*os.File) {
+	for _, file := range files {
+		if file == nil {
+			continue
+		}
+		_ = file.Close()
+	}
+}
+
+func RuntimeDebugInfo(cfg *Config) any {
+	return map[string]any{
+		"runtimeGoos":            runtimeGOOS,
+		"runningOnAndroid":       runningOnAndroid(),
+		"defaultFindProcessMode": defaultFindProcessMode(),
+	}
 }

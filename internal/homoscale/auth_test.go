@@ -61,6 +61,29 @@ func TestAuthStatusFromIPN(t *testing.T) {
 	}
 }
 
+func TestAuthStatusFromIPNIncludesTailnetAccessDomain(t *testing.T) {
+	status := authStatusFromIPN("embedded", "", &ipnstate.Status{
+		BackendState: "Running",
+		CurrentTailnet: &ipnstate.TailnetStatus{
+			Name:            "example.com",
+			MagicDNSSuffix:  "foo.ts.net",
+			MagicDNSEnabled: true,
+		},
+		Self: &ipnstate.PeerStatus{
+			DNSName:      "phone.foo.ts.net.",
+			TailscaleIPs: []netip.Addr{netip.MustParseAddr("100.64.0.10")},
+		},
+	})
+
+	if status.SelfDNSName != "phone.foo.ts.net" {
+		t.Fatalf("unexpected self dns name: %s", status.SelfDNSName)
+	}
+	want := []string{"phone.foo.ts.net", "phone"}
+	if !reflect.DeepEqual(status.AccessDomains, want) {
+		t.Fatalf("unexpected access domains: got %v want %v", status.AccessDomains, want)
+	}
+}
+
 func TestMagicDNSHostsFromStatus(t *testing.T) {
 	status := &ipnstate.Status{
 		Self: &ipnstate.PeerStatus{
@@ -81,6 +104,33 @@ func TestMagicDNSHostsFromStatus(t *testing.T) {
 	}
 	if got := hosts["peer.foo.ts.net"]; got != "100.64.0.20" {
 		t.Fatalf("unexpected peer host mapping: %q", got)
+	}
+}
+
+func TestMagicDNSShortHostAliases(t *testing.T) {
+	hosts := map[string]string{
+		"phone.foo.ts.net": "100.64.0.10",
+		"peer.foo.ts.net":  "100.64.0.20",
+	}
+
+	aliases := magicDNSShortHostAliases(hosts, "foo.ts.net")
+	if got := aliases["phone"]; got != "100.64.0.10" {
+		t.Fatalf("unexpected phone short mapping: %q", got)
+	}
+	if got := aliases["peer"]; got != "100.64.0.20" {
+		t.Fatalf("unexpected peer short mapping: %q", got)
+	}
+}
+
+func TestMagicDNSShortHostAliasesSkipsExistingShortHost(t *testing.T) {
+	hosts := map[string]string{
+		"phone.foo.ts.net": "100.64.0.10",
+		"phone":            "100.64.0.20",
+	}
+
+	aliases := magicDNSShortHostAliases(hosts, "foo.ts.net")
+	if len(aliases) != 0 {
+		t.Fatalf("expected existing short host to skip aliases, got %v", aliases)
 	}
 }
 

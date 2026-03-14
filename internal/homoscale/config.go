@@ -59,6 +59,7 @@ type EngineConfig struct {
 	RunArgs              []string        `yaml:"run_args"`
 	StateFile            string          `yaml:"state_file"`
 	MixedPort            int             `yaml:"mixed_port"`
+	IPv6                 *bool           `yaml:"ipv6"`
 	SubscriptionURL      string          `yaml:"subscription_url"`
 	SubscriptionPath     string          `yaml:"subscription_path"`
 	SubscriptionInterval int             `yaml:"subscription_interval"`
@@ -67,12 +68,19 @@ type EngineConfig struct {
 
 type EngineTunConfig struct {
 	Enable              *bool    `yaml:"enable"`
+	MTU                 int      `yaml:"mtu"`
 	Stack               string   `yaml:"stack"`
 	AutoRoute           *bool    `yaml:"auto_route"`
 	AutoRedirect        *bool    `yaml:"auto_redirect"`
 	AutoDetectInterface *bool    `yaml:"auto_detect_interface"`
 	StrictRoute         *bool    `yaml:"strict_route"`
 	DNSHijack           []string `yaml:"dns_hijack"`
+	Inet4Address        []string `yaml:"inet4_address"`
+	Inet6Address        []string `yaml:"inet6_address"`
+	IncludePackage      []string `yaml:"include_package"`
+	ExcludePackage      []string `yaml:"exclude_package"`
+	FileDescriptor      int      `yaml:"file_descriptor"`
+	RuntimeFile         *os.File `yaml:"-"`
 }
 
 type localEngineConfigFile struct {
@@ -255,6 +263,7 @@ func (e EngineConfig) isSet() bool {
 func (c *Config) EnsureRuntimeDirs() error {
 	dirs := []string{
 		c.RuntimeDir,
+		filepath.Join(c.RuntimeDir, "logs"),
 		c.Tailscale.StateDir,
 		filepath.Dir(c.Tailscale.Socket),
 		c.Engine.WorkingDir,
@@ -336,12 +345,18 @@ func (t *EngineTunConfig) applyDefaults() {
 
 func (t EngineTunConfig) isSet() bool {
 	return t.Enable != nil ||
+		t.MTU != 0 ||
 		strings.TrimSpace(t.Stack) != "" ||
 		t.AutoRoute != nil ||
 		t.AutoRedirect != nil ||
 		t.AutoDetectInterface != nil ||
 		t.StrictRoute != nil ||
-		len(t.DNSHijack) > 0
+		len(t.DNSHijack) > 0 ||
+		len(t.Inet4Address) > 0 ||
+		len(t.Inet6Address) > 0 ||
+		len(t.IncludePackage) > 0 ||
+		len(t.ExcludePackage) > 0 ||
+		t.FileDescriptor != 0
 }
 
 func boolPtr(v bool) *bool {
