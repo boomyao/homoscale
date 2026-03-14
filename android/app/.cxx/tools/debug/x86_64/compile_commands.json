@@ -1,7 +1,0 @@
-[
-{
-  "directory": "/Users/boomyao/.codex/worktrees/d8a8/homoscale/android/app/.cxx/Debug/381b2i39/x86_64",
-  "command": "/Users/boomyao/Library/Android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang --target=x86_64-none-linux-android28 --sysroot=/Users/boomyao/Library/Android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/darwin-x86_64/sysroot -Dhomoscale_jni_EXPORTS -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -fno-limit-debug-info  -fPIC -o CMakeFiles/homoscale_jni.dir/homoscale_jni.c.o -c /Users/boomyao/.codex/worktrees/d8a8/homoscale/android/app/src/main/cpp/homoscale_jni.c",
-  "file": "/Users/boomyao/.codex/worktrees/d8a8/homoscale/android/app/src/main/cpp/homoscale_jni.c"
-}
-]

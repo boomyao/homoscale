@@ -1,1 +1,0 @@
-/Users/boomyao/.codex/worktrees/d8a8/homoscale/android/app/build/intermediates/cxx/Debug/381b2i39/obj/x86_64
