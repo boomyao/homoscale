@@ -1,6 +1,8 @@
 package homoscale
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,6 +127,77 @@ func TestEnsureEngineConfigWritesSubscriptionBackedConfig(t *testing.T) {
 	}
 }
 
+func TestEnsureEngineConfigSanitizesAndroidSubscriptionProvider(t *testing.T) {
+	previousGOOS := runtimeGOOS
+	runtimeGOOS = "android"
+	t.Cleanup(func() {
+		runtimeGOOS = previousGOOS
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`proxies:
+  - name: HK
+    type: ss
+    server: 1.1.1.1
+    port: 8388
+    cipher: aes-128-gcm
+    password: test
+rules:
+  - PROCESS-NAME,com.example.app,Proxy
+`))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		RuntimeDir: dir,
+		Tailscale: TailscaleConfig{
+			Backend: "external",
+		},
+		Engine: EngineConfig{
+			ConfigPath:           filepath.Join(dir, "engine", "config.yaml"),
+			WorkingDir:           filepath.Join(dir, "engine"),
+			SubscriptionPath:     filepath.Join(dir, "engine", "providers", "subscription.yaml"),
+			SubscriptionURL:      server.URL,
+			SubscriptionInterval: 7200,
+			MixedPort:            17890,
+			ControllerAddr:       "127.0.0.1:9090",
+		},
+	}
+
+	created, err := ensureEngineConfig(cfg)
+	if err != nil {
+		t.Fatalf("ensure engine config: %v", err)
+	}
+	if !created {
+		t.Fatal("expected config to be created")
+	}
+
+	configData, err := os.ReadFile(cfg.Engine.ConfigPath)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	configText := string(configData)
+	if !strings.Contains(configText, "type: file") {
+		t.Fatalf("missing file subscription provider in config:\n%s", configText)
+	}
+	if strings.Contains(configText, "url: "+server.URL) {
+		t.Fatalf("unexpected remote subscription url in android config:\n%s", configText)
+	}
+
+	providerData, err := os.ReadFile(cfg.Engine.SubscriptionPath)
+	if err != nil {
+		t.Fatalf("read sanitized provider: %v", err)
+	}
+	providerText := string(providerData)
+	if !strings.Contains(providerText, "name: HK") {
+		t.Fatalf("missing proxy in sanitized provider:\n%s", providerText)
+	}
+	if strings.Contains(providerText, "PROCESS-NAME") {
+		t.Fatalf("unexpected process rule in sanitized provider:\n%s", providerText)
+	}
+}
+
 func TestEnsureEngineConfigWritesEmbeddedTailscaleProxy(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{
@@ -145,7 +218,7 @@ func TestEnsureEngineConfigWritesEmbeddedTailscaleProxy(t *testing.T) {
 	}
 	if err := writeRuntimeAuthStatus(cfg, authRuntimeSnapshot{
 		PID:           os.Getpid(),
-		Status:        &AuthStatus{Backend: "embedded", LoggedIn: true, MagicDNSSuffix: "tail123.ts.net"},
+		Status:        &AuthStatus{Backend: "embedded", LoggedIn: true, Tailnet: "example.com", MagicDNSSuffix: "tail123.ts.net"},
 		LoopbackAddr:  "127.0.0.1:16666",
 		ProxyUser:     "tsnet",
 		ProxyPass:     "secret-proxy",
@@ -173,8 +246,17 @@ func TestEnsureEngineConfigWritesEmbeddedTailscaleProxy(t *testing.T) {
 	if !strings.Contains(text, "use-hosts: true") {
 		t.Fatalf("missing dns.use-hosts in config:\n%s", text)
 	}
+	if !strings.Contains(text, "enable: true") {
+		t.Fatalf("missing dns.enable in config:\n%s", text)
+	}
+	if !strings.Contains(text, "nameserver:") {
+		t.Fatalf("missing dns.nameserver in config:\n%s", text)
+	}
 	if !strings.Contains(text, "peer.tail123.ts.net: 100.64.0.20") {
 		t.Fatalf("missing MagicDNS hosts mapping in config:\n%s", text)
+	}
+	if !strings.Contains(text, "peer: 100.64.0.20") {
+		t.Fatalf("missing short host mapping in config:\n%s", text)
 	}
 	if !strings.Contains(text, "server: 127.0.0.1") {
 		t.Fatalf("missing tailscale proxy server in config:\n%s", text)
@@ -351,6 +433,7 @@ rules:
 		Status: &AuthStatus{
 			Backend:        "embedded",
 			LoggedIn:       true,
+			Tailnet:        "example.com",
 			MagicDNSSuffix: "tail123.ts.net",
 		},
 		LoopbackAddr:  "127.0.0.1:16666",
@@ -386,8 +469,14 @@ rules:
 	if !strings.Contains(text, "use-hosts: true") {
 		t.Fatalf("missing dns.use-hosts in derived config:\n%s", text)
 	}
+	if !strings.Contains(text, "enable: true") {
+		t.Fatalf("missing dns.enable in derived config:\n%s", text)
+	}
 	if !strings.Contains(text, "peer.tail123.ts.net: 100.64.0.20") {
 		t.Fatalf("missing MagicDNS hosts mapping in derived config:\n%s", text)
+	}
+	if !strings.Contains(text, "peer: 100.64.0.20") {
+		t.Fatalf("missing short host mapping in derived config:\n%s", text)
 	}
 	if !strings.Contains(text, "DOMAIN-SUFFIX,tail123.ts.net,TAILSCALE") {
 		t.Fatalf("missing tailscale domain rule in derived config:\n%s", text)

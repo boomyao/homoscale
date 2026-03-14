@@ -8,3 +8,8 @@ var/
 .DS_Store
 
 /homoscale
+
+android/.gradle/
+android/local.properties
+android/app/build/
+android/app/.cxx/

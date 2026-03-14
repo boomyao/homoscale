@@ -1,13 +1,17 @@
 package homoscale
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -35,19 +39,15 @@ func ensureEngineConfig(cfg *Config) (bool, error) {
 		"allow-lan":           false,
 		"mode":                "rule",
 		"log-level":           "info",
+		"find-process-mode":   defaultFindProcessMode(),
 		"external-controller": controllerListenAddr(cfg),
 		"secret":              cfg.Engine.Secret,
 	}
-	if cfg.Engine.Tun.Enable != nil && *cfg.Engine.Tun.Enable {
-		payload["tun"] = map[string]any{
-			"enable":                true,
-			"stack":                 cfg.Engine.Tun.Stack,
-			"auto-route":            boolValue(cfg.Engine.Tun.AutoRoute),
-			"auto-redirect":         boolValue(cfg.Engine.Tun.AutoRedirect),
-			"auto-detect-interface": boolValue(cfg.Engine.Tun.AutoDetectInterface),
-			"strict-route":          boolValue(cfg.Engine.Tun.StrictRoute),
-			"dns-hijack":            append([]string(nil), cfg.Engine.Tun.DNSHijack...),
-		}
+	if cfg.Engine.IPv6 != nil {
+		payload["ipv6"] = *cfg.Engine.IPv6
+	}
+	if tunPayload := buildTunPayload(cfg); tunPayload != nil {
+		payload["tun"] = tunPayload
 	}
 	injectTailscaleDNS(payload, cfg)
 	tailscaleProxy, tailscaleRules, err := buildTailscaleRouting(cfg)
@@ -68,18 +68,12 @@ func ensureEngineConfig(cfg *Config) (bool, error) {
 			},
 		}
 	} else {
+		subscriptionProvider, err := buildSubscriptionProvider(cfg)
+		if err != nil {
+			return false, err
+		}
 		payload["proxy-providers"] = map[string]any{
-			"subscription": map[string]any{
-				"type":     "http",
-				"url":      cfg.Engine.SubscriptionURL,
-				"path":     cfg.Engine.SubscriptionPath,
-				"interval": cfg.Engine.SubscriptionInterval,
-				"health-check": map[string]any{
-					"enable":   true,
-					"url":      "https://cp.cloudflare.com/generate_204",
-					"interval": 600,
-				},
-			},
+			"subscription": subscriptionProvider,
 		}
 		payload["proxy-groups"] = []map[string]any{
 			{
@@ -141,17 +135,13 @@ func writeDerivedEngineConfig(cfg *Config) (bool, error) {
 	payload["external-controller"] = controllerListenAddr(cfg)
 	payload["secret"] = cfg.Engine.Secret
 	setTopLevelInt(payload, "mixed-port", cfg.Engine.MixedPort)
+	payload["find-process-mode"] = defaultFindProcessMode()
+	if cfg.Engine.IPv6 != nil {
+		payload["ipv6"] = *cfg.Engine.IPv6
+	}
 
-	if cfg.Engine.Tun.Enable != nil && *cfg.Engine.Tun.Enable {
-		payload["tun"] = map[string]any{
-			"enable":                true,
-			"stack":                 cfg.Engine.Tun.Stack,
-			"auto-route":            boolValue(cfg.Engine.Tun.AutoRoute),
-			"auto-redirect":         boolValue(cfg.Engine.Tun.AutoRedirect),
-			"auto-detect-interface": boolValue(cfg.Engine.Tun.AutoDetectInterface),
-			"strict-route":          boolValue(cfg.Engine.Tun.StrictRoute),
-			"dns-hijack":            append([]string(nil), cfg.Engine.Tun.DNSHijack...),
-		}
+	if tunPayload := buildTunPayload(cfg); tunPayload != nil {
+		payload["tun"] = tunPayload
 	}
 	injectTailscaleDNS(payload, cfg)
 
@@ -217,10 +207,10 @@ func buildTailscaleRouting(cfg *Config) (map[string]any, []string, error) {
 
 func tailscaleMagicDNSSuffix(cfg *Config) string {
 	if snapshot, ok := readRuntimeAuthSnapshot(cfg); ok && snapshot.Status != nil {
-		return strings.TrimSpace(snapshot.Status.MagicDNSSuffix)
+		return normalizeDNSName(snapshot.Status.MagicDNSSuffix)
 	}
 	if status, err := ReadAuthStatus(cfg); err == nil && status != nil {
-		return strings.TrimSpace(status.MagicDNSSuffix)
+		return normalizeDNSName(status.MagicDNSSuffix)
 	}
 	return ""
 }
@@ -242,6 +232,48 @@ func controllerListenAddr(cfg *Config) string {
 
 func boolValue(value *bool) bool {
 	return value != nil && *value
+}
+
+func defaultFindProcessMode() string {
+	if runningOnAndroid() {
+		return "strict"
+	}
+	return "off"
+}
+
+func buildTunPayload(cfg *Config) map[string]any {
+	if cfg == nil || cfg.Engine.Tun.Enable == nil || !*cfg.Engine.Tun.Enable {
+		return nil
+	}
+
+	payload := map[string]any{
+		"enable":                true,
+		"stack":                 cfg.Engine.Tun.Stack,
+		"auto-route":            boolValue(cfg.Engine.Tun.AutoRoute),
+		"auto-redirect":         boolValue(cfg.Engine.Tun.AutoRedirect),
+		"auto-detect-interface": boolValue(cfg.Engine.Tun.AutoDetectInterface),
+		"strict-route":          boolValue(cfg.Engine.Tun.StrictRoute),
+		"dns-hijack":            append([]string(nil), cfg.Engine.Tun.DNSHijack...),
+	}
+	if cfg.Engine.Tun.MTU > 0 {
+		payload["mtu"] = cfg.Engine.Tun.MTU
+	}
+	if len(cfg.Engine.Tun.Inet4Address) > 0 {
+		payload["inet4-address"] = append([]string(nil), cfg.Engine.Tun.Inet4Address...)
+	}
+	if len(cfg.Engine.Tun.Inet6Address) > 0 {
+		payload["inet6-address"] = append([]string(nil), cfg.Engine.Tun.Inet6Address...)
+	}
+	if len(cfg.Engine.Tun.IncludePackage) > 0 {
+		payload["include-package"] = append([]string(nil), cfg.Engine.Tun.IncludePackage...)
+	}
+	if len(cfg.Engine.Tun.ExcludePackage) > 0 {
+		payload["exclude-package"] = append([]string(nil), cfg.Engine.Tun.ExcludePackage...)
+	}
+	if cfg.Engine.Tun.FileDescriptor > 0 {
+		payload["file-descriptor"] = cfg.Engine.Tun.FileDescriptor
+	}
+	return payload
 }
 
 func managedEngineConfigMarkerPath(cfg *Config) string {
@@ -301,13 +333,26 @@ func injectTailscaleRules(payload map[string]any, rules []string) {
 }
 
 func injectTailscaleDNS(payload map[string]any, cfg *Config) {
-	hosts := tailscaleMagicDNSHosts(cfg)
+	injectTailscaleDNSHosts(payload, cfg, tailscaleMagicDNSHosts(cfg))
+}
+
+func injectTailscaleDNSHosts(payload map[string]any, cfg *Config, hosts map[string]string) {
 	if len(hosts) == 0 {
 		return
 	}
 
 	dnsSection := ensureStringMap(payload, "dns")
+	dnsSection["enable"] = true
 	dnsSection["use-hosts"] = true
+	if _, ok := dnsSection["default-nameserver"]; !ok {
+		dnsSection["default-nameserver"] = []string{"223.5.5.5", "1.1.1.1"}
+	}
+	if len(stringSlice(dnsSection["nameserver"])) == 0 {
+		dnsSection["nameserver"] = []string{"https://dns.alidns.com/dns-query", "https://1.1.1.1/dns-query"}
+	}
+	if cfg.Engine.IPv6 != nil {
+		dnsSection["ipv6"] = *cfg.Engine.IPv6
+	}
 
 	hostSection := ensureStringMap(payload, "hosts")
 	for host, ip := range hosts {
@@ -315,16 +360,103 @@ func injectTailscaleDNS(payload map[string]any, cfg *Config) {
 	}
 }
 
+func buildSubscriptionProvider(cfg *Config) (map[string]any, error) {
+	provider := map[string]any{
+		"path": cfg.Engine.SubscriptionPath,
+		"health-check": map[string]any{
+			"enable":   true,
+			"url":      "https://cp.cloudflare.com/generate_204",
+			"interval": 600,
+		},
+	}
+	if runningOnAndroid() {
+		if err := writeAndroidSubscriptionProvider(cfg); err != nil {
+			return nil, err
+		}
+		provider["type"] = "file"
+		return provider, nil
+	}
+
+	provider["type"] = "http"
+	provider["url"] = cfg.Engine.SubscriptionURL
+	provider["interval"] = cfg.Engine.SubscriptionInterval
+	return provider, nil
+}
+
+func writeAndroidSubscriptionProvider(cfg *Config) error {
+	if err := os.MkdirAll(filepath.Dir(cfg.Engine.SubscriptionPath), 0o755); err != nil {
+		return fmt.Errorf("create android subscription dir: %w", err)
+	}
+
+	body, err := fetchSubscription(cfg.Engine.SubscriptionURL)
+	if err != nil {
+		return err
+	}
+	content, err := normalizeSubscriptionProvider(body)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(cfg.Engine.SubscriptionPath, content, 0o644); err != nil {
+		return fmt.Errorf("write android subscription provider %s: %w", cfg.Engine.SubscriptionPath, err)
+	}
+	return nil
+}
+
+func fetchSubscription(rawURL string) ([]byte, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get(strings.TrimSpace(rawURL))
+	if err != nil {
+		return nil, fmt.Errorf("download subscription %s: %w", rawURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("download subscription %s: %s", rawURL, resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read subscription %s: %w", rawURL, err)
+	}
+	return body, nil
+}
+
+func normalizeSubscriptionProvider(raw []byte) ([]byte, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return raw, nil
+	}
+
+	payload := map[string]any{}
+	if err := yaml.Unmarshal(trimmed, &payload); err != nil || len(payload) == 0 {
+		return raw, nil
+	}
+
+	proxies, ok := payload["proxies"]
+	if !ok {
+		return raw, nil
+	}
+
+	content, err := yaml.Marshal(map[string]any{
+		"proxies": proxies,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal sanitized subscription provider: %w", err)
+	}
+	return content, nil
+}
+
 func tailscaleMagicDNSHosts(cfg *Config) map[string]string {
 	if snapshot, ok := readRuntimeAuthSnapshot(cfg); ok && len(snapshot.MagicDNSHosts) > 0 {
 		out := make(map[string]string, len(snapshot.MagicDNSHosts))
 		for host, ip := range snapshot.MagicDNSHosts {
-			host = strings.TrimSpace(host)
+			host = normalizeDNSName(host)
 			ip = strings.TrimSpace(ip)
 			if host == "" || ip == "" {
 				continue
 			}
 			out[host] = ip
+		}
+		for alias, ip := range magicDNSShortHostAliases(out, tailscaleMagicDNSSuffix(cfg)) {
+			out[alias] = ip
 		}
 		if len(out) > 0 {
 			return out
@@ -337,7 +469,11 @@ func tailscaleMagicDNSHosts(cfg *Config) map[string]string {
 	if err != nil {
 		return nil
 	}
-	return magicDNSHostsFromStatus(status)
+	out := magicDNSHostsFromStatus(status)
+	for alias, ip := range magicDNSShortHostAliases(out, magicDNSSuffixFromStatus(status, "")) {
+		out[alias] = ip
+	}
+	return out
 }
 
 func ensureStringMap(payload map[string]any, key string) map[string]any {

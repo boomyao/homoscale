@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"tailscale.com/client/local"
@@ -27,6 +28,8 @@ type AuthStatus struct {
 	Tailnet          string   `json:"tailnet,omitempty"`
 	MagicDNSSuffix   string   `json:"magic_dns_suffix,omitempty"`
 	MagicDNSEnabled  bool     `json:"magic_dns_enabled,omitempty"`
+	SelfDNSName      string   `json:"self_dns_name,omitempty"`
+	AccessDomains    []string `json:"access_domains,omitempty"`
 	TailscaleIPs     []string `json:"tailscale_ips,omitempty"`
 	Health           []string `json:"health,omitempty"`
 	Socket           string   `json:"socket,omitempty"`
@@ -250,6 +253,9 @@ func newEmbeddedTailscaleServer(cfg *Config, logWriter io.Writer) *tsnet.Server 
 	if logWriter == nil {
 		logWriter = io.Discard
 	}
+	if strings.TrimSpace(os.Getenv("TS_LOGS_DIR")) == "" {
+		_ = os.Setenv("TS_LOGS_DIR", cfg.Tailscale.StateDir)
+	}
 	userLogger := log.New(logWriter, "[tailscale] ", log.LstdFlags)
 	server := &tsnet.Server{
 		Dir:           cfg.Tailscale.StateDir,
@@ -316,8 +322,10 @@ func authStatusFromIPN(backend, socket string, status *ipnstate.Status) *AuthSta
 		Socket:           socket,
 	}
 	if status.CurrentTailnet != nil {
-		out.Tailnet = status.CurrentTailnet.Name
+		out.Tailnet = normalizeDNSName(status.CurrentTailnet.Name)
 	}
+	out.SelfDNSName = peerDNSName(status.Self)
+	out.AccessDomains = accessDomainsForHost(out.SelfDNSName, out.MagicDNSSuffix)
 	return out
 }
 

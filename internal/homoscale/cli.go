@@ -51,8 +51,13 @@ func runStart(args []string) error {
 	if err != nil {
 		return err
 	}
-	if daemonize && !daemonChildProcess() {
-		return startDaemonProcess(cfg, args)
+	if daemonize {
+		if err := ensureDaemonSupported(); err != nil {
+			return err
+		}
+		if !daemonChildProcess() {
+			return startDaemonProcess(cfg, args)
+		}
 	}
 	if daemonChildProcess() {
 		defer removeDaemonPIDFile(cfg)
