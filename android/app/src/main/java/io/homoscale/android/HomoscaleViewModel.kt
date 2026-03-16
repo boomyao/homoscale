@@ -19,6 +19,13 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+data class AppRoutingUiState(
+    val mode: String = ConfigFiles.TUN_ROUTE_MODE_EXCLUDE,
+    val includePackages: List<String> = emptyList(),
+    val excludePackages: List<String> = emptyList(),
+    val installedApps: List<InstalledAppInfo> = emptyList(),
+)
+
 data class HomoscaleUiState(
     val loading: Boolean = true,
     val refreshing: Boolean = false,
@@ -33,6 +40,7 @@ data class HomoscaleUiState(
     val status: StatusOverview = StatusOverview(),
     val auth: TailnetAuthState = TailnetAuthState(),
     val engine: EngineUiState = EngineUiState(),
+    val appRouting: AppRoutingUiState = AppRoutingUiState(),
     val logPath: String = "",
     val lastError: String = "",
     val message: String = "",
@@ -58,6 +66,7 @@ class HomoscaleViewModel(application: Application) : AndroidViewModel(applicatio
 
     init {
         viewModelScope.launch {
+            refreshInstalledApps()
             syncConfig()
             refreshStatus(announceErrors = false)
             startPolling()
@@ -65,6 +74,15 @@ class HomoscaleViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun connectService() {
+        val current = _uiState.value
+        if (current.appRouting.mode == ConfigFiles.TUN_ROUTE_MODE_INCLUDE &&
+            current.appRouting.includePackages.isEmpty()
+        ) {
+            viewModelScope.launch {
+                emitMessage("Whitelist mode needs at least one app selected before connecting.")
+            }
+            return
+        }
         launchBusyAction("Connecting…") {
             val configPath = syncConfig()
             val intent = HomoscaleService.startIntent(appContext, configPath, _uiState.value.enableIpv6)
@@ -131,6 +149,9 @@ class HomoscaleViewModel(application: Application) : AndroidViewModel(applicatio
                 subscriptions = current.subscriptions,
                 activeSubscriptionId = current.activeSubscriptionId,
                 enableIpv6 = enabled,
+                tunRoutingMode = current.appRouting.mode,
+                tunIncludePackages = current.appRouting.includePackages,
+                tunExcludePackages = current.appRouting.excludePackages,
             )
         )
         _uiState.update { it.copy(enableIpv6 = enabled) }
@@ -141,14 +162,7 @@ class HomoscaleViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun setActiveSubscription(profileId: String) {
-        val current = _uiState.value
-        prefsStore.save(
-            AppPreferencesState(
-                subscriptions = current.subscriptions,
-                activeSubscriptionId = profileId,
-                enableIpv6 = current.enableIpv6,
-            )
-        )
+        savePreferences(activeSubscriptionId = profileId)
         _uiState.update { it.copy(activeSubscriptionId = profileId) }
         viewModelScope.launch {
             syncConfig()
@@ -180,12 +194,9 @@ class HomoscaleViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         val activeId = current.activeSubscriptionId ?: profile.id
-        prefsStore.save(
-            AppPreferencesState(
-                subscriptions = updated,
-                activeSubscriptionId = activeId,
-                enableIpv6 = current.enableIpv6,
-            )
+        savePreferences(
+            subscriptions = updated,
+            activeSubscriptionId = activeId,
         )
         _uiState.update { it.copy(subscriptions = updated, activeSubscriptionId = activeId) }
         viewModelScope.launch {
@@ -199,17 +210,121 @@ class HomoscaleViewModel(application: Application) : AndroidViewModel(applicatio
         val updated = current.subscriptions.filterNot { it.id == profileId }
         val activeId = current.activeSubscriptionId?.takeIf { id -> updated.any { it.id == id } }
             ?: updated.firstOrNull()?.id
-        prefsStore.save(
-            AppPreferencesState(
-                subscriptions = updated,
-                activeSubscriptionId = activeId,
-                enableIpv6 = current.enableIpv6,
-            )
+        savePreferences(
+            subscriptions = updated,
+            activeSubscriptionId = activeId,
         )
         _uiState.update { it.copy(subscriptions = updated, activeSubscriptionId = activeId) }
         viewModelScope.launch {
             syncConfig()
             emitMessage("Subscription removed.")
+        }
+    }
+
+    fun setPackageBypass(packageName: String, enabled: Boolean) {
+        val trimmedPackage = packageName.trim()
+        if (trimmedPackage.isBlank()) {
+            return
+        }
+
+        val current = _uiState.value
+        val includePackages = if (current.appRouting.mode == ConfigFiles.TUN_ROUTE_MODE_INCLUDE) {
+            if (enabled) {
+                (current.appRouting.includePackages + trimmedPackage).distinct().sorted()
+            } else {
+                current.appRouting.includePackages.filterNot { it == trimmedPackage }
+            }
+        } else {
+            current.appRouting.includePackages
+        }
+        val excludePackages = if (current.appRouting.mode == ConfigFiles.TUN_ROUTE_MODE_EXCLUDE) {
+            if (enabled) {
+                (current.appRouting.excludePackages + trimmedPackage).distinct().sorted()
+            } else {
+                current.appRouting.excludePackages.filterNot { it == trimmedPackage }
+            }
+        } else {
+            current.appRouting.excludePackages
+        }
+
+        savePreferences(
+            tunIncludePackages = includePackages,
+            tunExcludePackages = excludePackages,
+        )
+        _uiState.update {
+            it.copy(
+                appRouting = it.appRouting.copy(
+                    includePackages = includePackages,
+                    excludePackages = excludePackages,
+                ),
+            )
+        }
+        viewModelScope.launch {
+            refreshInstalledApps()
+            syncConfig()
+            emitMessage(
+                when {
+                    current.appRouting.mode == ConfigFiles.TUN_ROUTE_MODE_INCLUDE && enabled ->
+                        "Added to proxy app list. Reconnect to apply."
+                    current.appRouting.mode == ConfigFiles.TUN_ROUTE_MODE_INCLUDE ->
+                        "Removed from proxy app list. Reconnect to apply."
+                    enabled ->
+                        "Added to VPN bypass list. Reconnect to apply."
+                    else ->
+                        "Removed from VPN bypass list. Reconnect to apply."
+                }
+            )
+        }
+    }
+
+    fun setRoutingMode(mode: String) {
+        if (mode != ConfigFiles.TUN_ROUTE_MODE_INCLUDE && mode != ConfigFiles.TUN_ROUTE_MODE_EXCLUDE) {
+            return
+        }
+        savePreferences(tunRoutingMode = mode)
+        _uiState.update {
+            it.copy(
+                appRouting = it.appRouting.copy(mode = mode),
+            )
+        }
+        viewModelScope.launch {
+            refreshInstalledApps()
+            syncConfig()
+            emitMessage(
+                if (mode == ConfigFiles.TUN_ROUTE_MODE_INCLUDE) {
+                    "Switched to whitelist mode. Reconnect to apply."
+                } else {
+                    "Switched to blacklist mode. Reconnect to apply."
+                }
+            )
+        }
+    }
+
+    fun addSuggestedProxyApps() {
+        val current = _uiState.value
+        val suggestedPackages = InstalledAppsCatalog.suggestedProxyApps(current.appRouting.installedApps)
+            .map { it.packageName }
+        if (suggestedPackages.isEmpty()) {
+            viewModelScope.launch { emitMessage("No installed default proxy apps were found.") }
+            return
+        }
+        val updatedIncludePackages = (current.appRouting.includePackages + suggestedPackages).distinct().sorted()
+        savePreferences(
+            tunRoutingMode = ConfigFiles.TUN_ROUTE_MODE_INCLUDE,
+            tunIncludePackages = updatedIncludePackages,
+        )
+        _uiState.update {
+            it.copy(
+                appRouting = it.appRouting.copy(
+                    mode = ConfigFiles.TUN_ROUTE_MODE_INCLUDE,
+                    includePackages = updatedIncludePackages,
+                ),
+            )
+        }
+        viewModelScope.launch {
+            refreshInstalledApps()
+            syncConfig()
+            emitMessage("Added installed default proxy apps. Reconnect to apply.")
         }
     }
 
@@ -237,6 +352,7 @@ class HomoscaleViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun manualRefresh() {
         viewModelScope.launch {
+            refreshInstalledApps()
             refreshStatus(announceErrors = true)
         }
     }
@@ -279,10 +395,29 @@ class HomoscaleViewModel(application: Application) : AndroidViewModel(applicatio
     private suspend fun syncConfig(): String {
         val activeUrl = _uiState.value.activeSubscription?.url.orEmpty()
         val configPath = withContext(Dispatchers.IO) {
-            ConfigFiles.writeDefaultConfig(appContext, activeUrl, _uiState.value.enableIpv6)
+            ConfigFiles.writeDefaultConfig(
+                appContext,
+                activeUrl,
+                _uiState.value.enableIpv6,
+                _uiState.value.appRouting.mode,
+                _uiState.value.appRouting.includePackages,
+                _uiState.value.appRouting.excludePackages,
+            )
         }
         _uiState.update { it.copy(configPath = configPath) }
         return configPath
+    }
+
+    private suspend fun refreshInstalledApps() {
+        val selectedPackages = activePackageSelection().toSet()
+        val installedApps = withContext(Dispatchers.IO) {
+            InstalledAppsCatalog.load(appContext, selectedPackages)
+        }
+        _uiState.update {
+            it.copy(
+                appRouting = it.appRouting.copy(installedApps = installedApps),
+            )
+        }
     }
 
     private fun currentConfigPath(): String {
@@ -295,10 +430,43 @@ class HomoscaleViewModel(application: Application) : AndroidViewModel(applicatio
             subscriptions = prefs.subscriptions,
             activeSubscriptionId = prefs.activeSubscriptionId,
             enableIpv6 = prefs.enableIpv6,
+            appRouting = AppRoutingUiState(
+                mode = prefs.tunRoutingMode,
+                includePackages = prefs.tunIncludePackages,
+                excludePackages = prefs.tunExcludePackages,
+            ),
             bundledMihomoVersion = BundledMihomo.version(appContext),
             runtimeDir = ConfigFiles.runtimeDir(appContext).absolutePath,
             configPath = ConfigFiles.configFile(appContext).absolutePath,
         )
+    }
+
+    private fun savePreferences(
+        subscriptions: List<SubscriptionProfile> = _uiState.value.subscriptions,
+        activeSubscriptionId: String? = _uiState.value.activeSubscriptionId,
+        enableIpv6: Boolean = _uiState.value.enableIpv6,
+        tunRoutingMode: String = _uiState.value.appRouting.mode,
+        tunIncludePackages: List<String> = _uiState.value.appRouting.includePackages,
+        tunExcludePackages: List<String> = _uiState.value.appRouting.excludePackages,
+    ) {
+        prefsStore.save(
+            AppPreferencesState(
+                subscriptions = subscriptions,
+                activeSubscriptionId = activeSubscriptionId,
+                enableIpv6 = enableIpv6,
+                tunRoutingMode = tunRoutingMode,
+                tunIncludePackages = tunIncludePackages,
+                tunExcludePackages = tunExcludePackages,
+            )
+        )
+    }
+
+    private fun activePackageSelection(): List<String> {
+        return if (_uiState.value.appRouting.mode == ConfigFiles.TUN_ROUTE_MODE_INCLUDE) {
+            _uiState.value.appRouting.includePackages
+        } else {
+            _uiState.value.appRouting.excludePackages
+        }
     }
 
     private fun launchBusyAction(message: String, block: suspend () -> Unit) {

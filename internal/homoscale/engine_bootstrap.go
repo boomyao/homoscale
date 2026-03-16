@@ -167,6 +167,7 @@ func buildTailscaleRouting(cfg *Config) (map[string]any, []string, error) {
 
 	target := "DIRECT"
 	var proxy map[string]any
+	rules := append([]string(nil), managedDirectRules()...)
 
 	switch cfg.Tailscale.Backend {
 	case "embedded":
@@ -194,15 +195,27 @@ func buildTailscaleRouting(cfg *Config) (map[string]any, []string, error) {
 	}
 
 	suffix := tailscaleMagicDNSSuffix(cfg)
-	rules := []string{
+	rules = append(rules,
 		fmt.Sprintf(tailnetCGNAT, target),
-	}
+	)
 	if suffix != "" {
 		rules = append([]string{fmt.Sprintf("DOMAIN-SUFFIX,%s,%s", suffix, target)}, rules...)
 	} else {
 		rules = append([]string{fmt.Sprintf("DOMAIN-SUFFIX,ts.net,%s", target)}, rules...)
 	}
 	return proxy, rules, nil
+}
+
+func managedDirectRules() []string {
+	return []string{
+		"DOMAIN-SUFFIX,acg.tv,DIRECT",
+		"DOMAIN-SUFFIX,biliapi.com,DIRECT",
+		"DOMAIN-SUFFIX,bilibili.cn,DIRECT",
+		"DOMAIN-SUFFIX,bilibili.com,DIRECT",
+		"DOMAIN-SUFFIX,bilibili.net,DIRECT",
+		"DOMAIN-SUFFIX,bilivideo.com,DIRECT",
+		"DOMAIN-SUFFIX,hdslb.com,DIRECT",
+	}
 }
 
 func tailscaleMagicDNSSuffix(cfg *Config) string {
@@ -390,6 +403,9 @@ func writeAndroidSubscriptionProvider(cfg *Config) error {
 
 	body, err := fetchSubscription(cfg.Engine.SubscriptionURL)
 	if err != nil {
+		if hasUsableAndroidSubscriptionCache(cfg.Engine.SubscriptionPath) {
+			return nil
+		}
 		return err
 	}
 	content, err := normalizeSubscriptionProvider(body)
@@ -400,6 +416,14 @@ func writeAndroidSubscriptionProvider(cfg *Config) error {
 		return fmt.Errorf("write android subscription provider %s: %w", cfg.Engine.SubscriptionPath, err)
 	}
 	return nil
+}
+
+func hasUsableAndroidSubscriptionCache(path string) bool {
+	data, err := os.ReadFile(strings.TrimSpace(path))
+	if err != nil {
+		return false
+	}
+	return len(bytes.TrimSpace(data)) > 0
 }
 
 func fetchSubscription(rawURL string) ([]byte, error) {

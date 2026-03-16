@@ -65,6 +65,12 @@ func TestEnsureEngineConfigWritesDefaultConfig(t *testing.T) {
 	if !strings.Contains(text, "DOMAIN-SUFFIX,ts.net,DIRECT") {
 		t.Fatalf("missing tailscale domain rule in config:\n%s", text)
 	}
+	if !strings.Contains(text, "DOMAIN-SUFFIX,bilivideo.com,DIRECT") {
+		t.Fatalf("missing bilibili direct rule in config:\n%s", text)
+	}
+	if !strings.Contains(text, "DOMAIN-SUFFIX,bilibili.com,DIRECT") {
+		t.Fatalf("missing bilibili domain rule in config:\n%s", text)
+	}
 	if !strings.Contains(text, "IP-CIDR,100.64.0.0/10,DIRECT,no-resolve") {
 		t.Fatalf("missing tailscale CIDR rule in config:\n%s", text)
 	}
@@ -198,6 +204,62 @@ rules:
 	}
 }
 
+func TestEnsureEngineConfigReusesCachedAndroidSubscriptionProviderWhenFetchFails(t *testing.T) {
+	previousGOOS := runtimeGOOS
+	runtimeGOOS = "android"
+	t.Cleanup(func() {
+		runtimeGOOS = previousGOOS
+	})
+
+	dir := t.TempDir()
+	subscriptionPath := filepath.Join(dir, "engine", "providers", "subscription.yaml")
+	if err := os.MkdirAll(filepath.Dir(subscriptionPath), 0o755); err != nil {
+		t.Fatalf("mkdir subscription dir: %v", err)
+	}
+	cached := []byte(`proxies:
+  - name: HK
+    type: ss
+    server: 1.1.1.1
+    port: 8388
+    cipher: aes-128-gcm
+    password: test
+`)
+	if err := os.WriteFile(subscriptionPath, cached, 0o644); err != nil {
+		t.Fatalf("write cached provider: %v", err)
+	}
+
+	cfg := &Config{
+		RuntimeDir: dir,
+		Tailscale: TailscaleConfig{
+			Backend: "external",
+		},
+		Engine: EngineConfig{
+			ConfigPath:       filepath.Join(dir, "engine", "config.yaml"),
+			WorkingDir:       filepath.Join(dir, "engine"),
+			SubscriptionPath: subscriptionPath,
+			SubscriptionURL:  "http://127.0.0.1:1/unreachable.yaml",
+			MixedPort:        17890,
+			ControllerAddr:   "127.0.0.1:9090",
+		},
+	}
+
+	created, err := ensureEngineConfig(cfg)
+	if err != nil {
+		t.Fatalf("ensure engine config with cached provider fallback: %v", err)
+	}
+	if !created {
+		t.Fatal("expected config to be created")
+	}
+
+	providerData, err := os.ReadFile(subscriptionPath)
+	if err != nil {
+		t.Fatalf("read cached provider after fallback: %v", err)
+	}
+	if string(providerData) != string(cached) {
+		t.Fatalf("cached provider should be preserved on fetch failure:\n%s", string(providerData))
+	}
+}
+
 func TestEnsureEngineConfigWritesEmbeddedTailscaleProxy(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{
@@ -267,6 +329,9 @@ func TestEnsureEngineConfigWritesEmbeddedTailscaleProxy(t *testing.T) {
 	if !strings.Contains(text, "DOMAIN-SUFFIX,tail123.ts.net,TAILSCALE") {
 		t.Fatalf("missing tailscale suffix rule in config:\n%s", text)
 	}
+	if !strings.Contains(text, "DOMAIN-SUFFIX,bilivideo.com,DIRECT") {
+		t.Fatalf("missing bilibili direct rule in config:\n%s", text)
+	}
 	if !strings.Contains(text, "IP-CIDR,100.64.0.0/10,TAILSCALE,no-resolve") {
 		t.Fatalf("missing tailscale CIDR rule in config:\n%s", text)
 	}
@@ -305,6 +370,41 @@ func TestEnsureEngineConfigAllowsTunToBeDisabled(t *testing.T) {
 	text := string(data)
 	if strings.Contains(text, "tun:") {
 		t.Fatalf("expected tun section to be omitted when disabled:\n%s", text)
+	}
+}
+
+func TestEnsureEngineConfigIncludesTunExcludePackage(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{
+		RuntimeDir: dir,
+		Tailscale: TailscaleConfig{
+			Backend: "external",
+		},
+		Engine: EngineConfig{
+			ConfigPath:     filepath.Join(dir, "engine", "config.yaml"),
+			WorkingDir:     filepath.Join(dir, "engine"),
+			MixedPort:      7890,
+			ControllerAddr: "127.0.0.1:9090",
+			Tun: EngineTunConfig{
+				ExcludePackage: []string{"tv.danmaku.bili"},
+			},
+		},
+	}
+
+	created, err := ensureEngineConfig(cfg)
+	if err != nil {
+		t.Fatalf("ensure engine config: %v", err)
+	}
+	if !created {
+		t.Fatal("expected config to be created")
+	}
+
+	data, err := os.ReadFile(cfg.Engine.ConfigPath)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	if !strings.Contains(string(data), "exclude-package:") || !strings.Contains(string(data), "tv.danmaku.bili") {
+		t.Fatalf("missing tun exclude-package in config:\n%s", string(data))
 	}
 }
 
@@ -480,6 +580,9 @@ rules:
 	}
 	if !strings.Contains(text, "DOMAIN-SUFFIX,tail123.ts.net,TAILSCALE") {
 		t.Fatalf("missing tailscale domain rule in derived config:\n%s", text)
+	}
+	if !strings.Contains(text, "DOMAIN-SUFFIX,bilivideo.com,DIRECT") {
+		t.Fatalf("missing bilibili direct rule in derived config:\n%s", text)
 	}
 	if !strings.Contains(text, "IP-CIDR,100.64.0.0/10,TAILSCALE,no-resolve") {
 		t.Fatalf("missing tailscale cidr rule in derived config:\n%s", text)

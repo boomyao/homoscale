@@ -22,11 +22,13 @@ import android.os.ParcelFileDescriptor;
 import org.json.JSONObject;
 import org.json.JSONArray;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.InterfaceAddress;
 import java.net.NetworkInterface;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -213,10 +215,36 @@ public final class HomoscaleService extends VpnService {
                         .addDnsServer(VPN_DNS6)
                         .addRoute("::", 0);
             }
-            try {
-                builder.addDisallowedApplication(getPackageName());
-            } catch (PackageManager.NameNotFoundException error) {
-                return "{\"ok\":false,\"error\":\"exclude package failed: " + escapeJson(error.getMessage()) + "\"}";
+            String packageMode = readTunPackageMode(configPath);
+            if (ConfigFiles.TUN_ROUTE_MODE_INCLUDE.equals(packageMode)) {
+                List<String> allowedPackages = readTunAllowedPackages(configPath);
+                if (allowedPackages.isEmpty()) {
+                    return "{\"ok\":false,\"error\":\"whitelist mode requires at least one selected app\"}";
+                }
+                for (String packageName : allowedPackages) {
+                    if (packageName.equals(getPackageName())) {
+                        continue;
+                    }
+                    try {
+                        builder.addAllowedApplication(packageName);
+                    } catch (PackageManager.NameNotFoundException ignored) {
+                    }
+                }
+            } else {
+                try {
+                    builder.addDisallowedApplication(getPackageName());
+                } catch (PackageManager.NameNotFoundException error) {
+                    return "{\"ok\":false,\"error\":\"exclude package failed: " + escapeJson(error.getMessage()) + "\"}";
+                }
+                for (String packageName : readTunDisallowedPackages(configPath)) {
+                    if (packageName.equals(getPackageName())) {
+                        continue;
+                    }
+                    try {
+                        builder.addDisallowedApplication(packageName);
+                    } catch (PackageManager.NameNotFoundException ignored) {
+                    }
+                }
             }
             tunInterface = builder.establish();
             if (tunInterface == null) {
@@ -235,6 +263,31 @@ public final class HomoscaleService extends VpnService {
                 }
             }
         }
+    }
+
+    private List<String> readTunDisallowedPackages(String configPath) {
+        LinkedHashSet<String> packages = new LinkedHashSet<>();
+        if (configPath == null || configPath.trim().isEmpty()) {
+            return new ArrayList<>();
+        }
+        packages.addAll(ConfigFiles.readTunExcludePackages(new File(configPath)));
+        return new ArrayList<>(packages);
+    }
+
+    private List<String> readTunAllowedPackages(String configPath) {
+        LinkedHashSet<String> packages = new LinkedHashSet<>();
+        if (configPath == null || configPath.trim().isEmpty()) {
+            return new ArrayList<>();
+        }
+        packages.addAll(ConfigFiles.readTunIncludePackages(new File(configPath)));
+        return new ArrayList<>(packages);
+    }
+
+    private String readTunPackageMode(String configPath) {
+        if (configPath == null || configPath.trim().isEmpty()) {
+            return ConfigFiles.TUN_ROUTE_MODE_EXCLUDE;
+        }
+        return ConfigFiles.readTunPackageMode(new File(configPath));
     }
 
     private static String extractSummary(String json, String fallback) {

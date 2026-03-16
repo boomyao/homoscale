@@ -153,6 +153,9 @@ class MainActivity : ComponentActivity() {
                     onSelectSubscription = viewModel::setActiveSubscription,
                     onSaveSubscription = viewModel::saveSubscription,
                     onDeleteSubscription = viewModel::deleteSubscription,
+                    onSetRoutingMode = viewModel::setRoutingMode,
+                    onSetPackageBypass = viewModel::setPackageBypass,
+                    onAddSuggestedProxyApps = viewModel::addSuggestedProxyApps,
                 )
             }
         }
@@ -200,6 +203,9 @@ private fun HomoscaleApp(
     onSelectSubscription: (String) -> Unit,
     onSaveSubscription: (String?, String, String) -> Unit,
     onDeleteSubscription: (String) -> Unit,
+    onSetRoutingMode: (String) -> Unit,
+    onSetPackageBypass: (String, Boolean) -> Unit,
+    onAddSuggestedProxyApps: () -> Unit,
 ) {
     var editingProfile by rememberSaveable(stateSaver = subscriptionEditorSaver()) { mutableStateOf<SubscriptionEditorState?>(null) }
     var selectorDialog by rememberSaveable(stateSaver = selectorDialogSaver()) { mutableStateOf<SelectorDialogState?>(null) }
@@ -277,6 +283,15 @@ private fun HomoscaleApp(
                     onSelect = onSelectSubscription,
                     onDelete = onDeleteSubscription,
                     onToggleIpv6 = onToggleIpv6,
+                )
+            }
+
+            item {
+                AppRoutingCard(
+                    uiState = uiState,
+                    onSetMode = onSetRoutingMode,
+                    onTogglePackage = onSetPackageBypass,
+                    onAddSuggestedProxyApps = onAddSuggestedProxyApps,
                 )
             }
 
@@ -518,6 +533,216 @@ private fun DomainChipRow(domains: List<String>) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AppRoutingCard(
+    uiState: HomoscaleUiState,
+    onSetMode: (String) -> Unit,
+    onTogglePackage: (String, Boolean) -> Unit,
+    onAddSuggestedProxyApps: () -> Unit,
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+    val normalizedQuery = query.trim()
+    val includeMode = uiState.appRouting.mode == ConfigFiles.TUN_ROUTE_MODE_INCLUDE
+    val selectedPackages = if (includeMode) {
+        uiState.appRouting.includePackages.toSet()
+    } else {
+        uiState.appRouting.excludePackages.toSet()
+    }
+    val selectedApps = uiState.appRouting.installedApps.filter { it.packageName in selectedPackages }
+    val suggestedApps = InstalledAppsCatalog.suggestedProxyApps(uiState.appRouting.installedApps)
+        .filterNot { selectedPackages.contains(it.packageName) }
+    val visibleApps = uiState.appRouting.installedApps.filter { app ->
+        normalizedQuery.isBlank() ||
+            app.label.contains(normalizedQuery, ignoreCase = true) ||
+            app.packageName.contains(normalizedQuery, ignoreCase = true)
+    }
+
+    Card {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("App routing", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (includeMode) {
+                            "Only selected apps enter Homoscale VPN. Everything else stays on the system network."
+                        } else {
+                            "Selected apps skip the Android VPN entirely. Use this for media and local-service apps that should stay on the system network."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Public,
+                        contentDescription = null,
+                        modifier = Modifier.padding(10.dp),
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                }
+            }
+
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                SegmentedButton(
+                    selected = includeMode,
+                    onClick = { onSetMode(ConfigFiles.TUN_ROUTE_MODE_INCLUDE) },
+                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                ) {
+                    Text("Only selected apps")
+                }
+                SegmentedButton(
+                    selected = !includeMode,
+                    onClick = { onSetMode(ConfigFiles.TUN_ROUTE_MODE_EXCLUDE) },
+                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                ) {
+                    Text("All except selected")
+                }
+            }
+
+            if (includeMode && suggestedApps.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Suggested defaults", style = MaterialTheme.typography.labelLarge)
+                            Text(
+                                "Installed apps that usually need proxy access.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        FilledActionChip("Add defaults", Icons.Rounded.Add, onAddSuggestedProxyApps)
+                    }
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        suggestedApps.forEach { app ->
+                            AssistChip(
+                                onClick = { onTogglePackage(app.packageName, true) },
+                                label = {
+                                    Text(
+                                        app.label,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (selectedApps.isEmpty()) {
+                OutlinedCard {
+                    Text(
+                        text = if (includeMode) {
+                            "No proxy app selected yet. Pick apps below to send only those apps through Homoscale."
+                        } else {
+                            "No app bypass configured yet. Pick apps below to exclude them from Homoscale VPN routing."
+                        },
+                        modifier = Modifier.padding(16.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        if (includeMode) "Using Homoscale now" else "Bypassing now",
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        selectedApps.forEach { app ->
+                            FilterChip(
+                                selected = true,
+                                onClick = { onTogglePackage(app.packageName, false) },
+                                label = {
+                                    Text(
+                                        app.label,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Rounded.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = query,
+                onValueChange = { query = it },
+                label = { Text("Search apps") },
+                placeholder = {
+                    Text(
+                        if (includeMode) {
+                            "YouTube, ChatGPT, Claude…"
+                        } else {
+                            "bilibili, weibo, meituan…"
+                        }
+                    )
+                },
+                singleLine = true,
+            )
+
+            if (uiState.appRouting.installedApps.isEmpty()) {
+                OutlinedCard {
+                    Text(
+                        text = "No launchable apps were discovered yet.",
+                        modifier = Modifier.padding(16.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                Text(
+                    text = "${visibleApps.size} apps",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(visibleApps, key = { it.packageName }) { app ->
+                        AppRoutingItem(
+                            app = app,
+                            selected = app.packageName in selectedPackages,
+                            enabled = !uiState.busy,
+                            modeLabel = if (includeMode) "Use Homoscale" else "Bypass",
+                            onToggle = { checked -> onTogglePackage(app.packageName, checked) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun DiagnosticsCard(uiState: HomoscaleUiState) {
     Card {
@@ -620,6 +845,68 @@ private fun SubscriptionCard(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun AppRoutingItem(
+    app: InstalledAppInfo,
+    selected: Boolean,
+    enabled: Boolean,
+    modeLabel: String,
+    onToggle: (Boolean) -> Unit,
+) {
+    val containerColor = if (selected) {
+        MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.52f)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .clickable(enabled = enabled) { onToggle(!selected) },
+        color = containerColor,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(app.label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(
+                    app.packageName,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (app.isSystemApp) {
+                    Text(
+                        text = "System app",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    text = modeLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = selected,
+                onCheckedChange = onToggle,
+                enabled = enabled,
+            )
         }
     }
 }
