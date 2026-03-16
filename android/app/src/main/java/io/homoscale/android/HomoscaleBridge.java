@@ -19,6 +19,8 @@ public final class HomoscaleBridge {
 
     public static native String login(String configPath);
 
+    public static native String refreshSubscription(String configPath);
+
     public static native String logout(String configPath);
 
     public static native String setProxyMode(String configPath, String mode);

@@ -133,7 +133,7 @@ func TestEnsureEngineConfigWritesSubscriptionBackedConfig(t *testing.T) {
 	}
 }
 
-func TestEnsureEngineConfigSanitizesAndroidSubscriptionProvider(t *testing.T) {
+func TestRefreshSubscriptionProviderSanitizesAndroidSubscriptionProvider(t *testing.T) {
 	previousGOOS := runtimeGOOS
 	runtimeGOOS = "android"
 	t.Cleanup(func() {
@@ -171,6 +171,10 @@ rules:
 		},
 	}
 
+	if err := RefreshSubscriptionProvider(cfg); err != nil {
+		t.Fatalf("refresh subscription provider: %v", err)
+	}
+
 	created, err := ensureEngineConfig(cfg)
 	if err != nil {
 		t.Fatalf("ensure engine config: %v", err)
@@ -204,7 +208,7 @@ rules:
 	}
 }
 
-func TestEnsureEngineConfigReusesCachedAndroidSubscriptionProviderWhenFetchFails(t *testing.T) {
+func TestRefreshSubscriptionProviderReusesCachedAndroidSubscriptionProviderWhenFetchFails(t *testing.T) {
 	previousGOOS := runtimeGOOS
 	runtimeGOOS = "android"
 	t.Cleanup(func() {
@@ -243,12 +247,8 @@ func TestEnsureEngineConfigReusesCachedAndroidSubscriptionProviderWhenFetchFails
 		},
 	}
 
-	created, err := ensureEngineConfig(cfg)
-	if err != nil {
-		t.Fatalf("ensure engine config with cached provider fallback: %v", err)
-	}
-	if !created {
-		t.Fatal("expected config to be created")
+	if err := RefreshSubscriptionProvider(cfg); err != nil {
+		t.Fatalf("refresh subscription provider with cached fallback: %v", err)
 	}
 
 	providerData, err := os.ReadFile(subscriptionPath)
@@ -257,6 +257,51 @@ func TestEnsureEngineConfigReusesCachedAndroidSubscriptionProviderWhenFetchFails
 	}
 	if string(providerData) != string(cached) {
 		t.Fatalf("cached provider should be preserved on fetch failure:\n%s", string(providerData))
+	}
+}
+
+func TestEnsureEngineConfigFallsBackWhenAndroidSubscriptionCacheMissing(t *testing.T) {
+	previousGOOS := runtimeGOOS
+	runtimeGOOS = "android"
+	t.Cleanup(func() {
+		runtimeGOOS = previousGOOS
+	})
+
+	dir := t.TempDir()
+	cfg := &Config{
+		RuntimeDir: dir,
+		Tailscale: TailscaleConfig{
+			Backend: "external",
+		},
+		Engine: EngineConfig{
+			ConfigPath:           filepath.Join(dir, "engine", "config.yaml"),
+			WorkingDir:           filepath.Join(dir, "engine"),
+			SubscriptionPath:     filepath.Join(dir, "engine", "providers", "subscription.yaml"),
+			SubscriptionURL:      "https://example.com/subscription.yaml",
+			SubscriptionInterval: 7200,
+			MixedPort:            17890,
+			ControllerAddr:       "127.0.0.1:9090",
+		},
+	}
+
+	created, err := ensureEngineConfig(cfg)
+	if err != nil {
+		t.Fatalf("ensure engine config: %v", err)
+	}
+	if !created {
+		t.Fatal("expected config to be created")
+	}
+
+	data, err := os.ReadFile(cfg.Engine.ConfigPath)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	text := string(data)
+	if strings.Contains(text, "proxy-providers:") {
+		t.Fatalf("unexpected subscription provider without cached android subscription:\n%s", text)
+	}
+	if !strings.Contains(text, "- DIRECT") {
+		t.Fatalf("missing DIRECT fallback without cached android subscription:\n%s", text)
 	}
 }
 

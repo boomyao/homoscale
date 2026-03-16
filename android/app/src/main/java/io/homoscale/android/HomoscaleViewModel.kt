@@ -32,6 +32,7 @@ data class HomoscaleUiState(
     val busy: Boolean = false,
     val subscriptions: List<SubscriptionProfile> = emptyList(),
     val activeSubscriptionId: String? = null,
+    val loadedSubscriptionUrl: String = "",
     val enableIpv6: Boolean = false,
     val bundledMihomoVersion: String = "",
     val runtimeDir: String = "",
@@ -47,6 +48,9 @@ data class HomoscaleUiState(
 ) {
     val activeSubscription: SubscriptionProfile?
         get() = subscriptions.firstOrNull { it.id == activeSubscriptionId }
+
+    val loadedSubscription: SubscriptionProfile?
+        get() = subscriptions.firstOrNull { it.url == loadedSubscriptionUrl }
 }
 
 sealed interface UiEvent {
@@ -148,6 +152,7 @@ class HomoscaleViewModel(application: Application) : AndroidViewModel(applicatio
             AppPreferencesState(
                 subscriptions = current.subscriptions,
                 activeSubscriptionId = current.activeSubscriptionId,
+                loadedSubscriptionUrl = current.loadedSubscriptionUrl,
                 enableIpv6 = enabled,
                 tunRoutingMode = current.appRouting.mode,
                 tunIncludePackages = current.appRouting.includePackages,
@@ -165,8 +170,31 @@ class HomoscaleViewModel(application: Application) : AndroidViewModel(applicatio
         savePreferences(activeSubscriptionId = profileId)
         _uiState.update { it.copy(activeSubscriptionId = profileId) }
         viewModelScope.launch {
-            syncConfig()
-            emitMessage("Active subscription updated.")
+            emitMessage("Subscription selected. Load config to refresh the cached provider.")
+        }
+    }
+
+    fun loadSubscriptionConfig() {
+        launchBusyAction("Loading config…") {
+            val previousLoadedUrl = _uiState.value.loadedSubscriptionUrl
+            val targetUrl = _uiState.value.activeSubscription?.url.orEmpty()
+            val configPath = syncConfig(subscriptionUrlOverride = targetUrl)
+            val envelope = BridgeEnvelope.parse(HomoscaleBridge.refreshSubscription(configPath))
+            if (!envelope.error.isNullOrBlank()) {
+                syncConfig(subscriptionUrlOverride = previousLoadedUrl)
+                emitMessage(envelope.error)
+                return@launchBusyAction
+            }
+            savePreferences(loadedSubscriptionUrl = targetUrl)
+            _uiState.update { it.copy(loadedSubscriptionUrl = targetUrl) }
+            refreshStatus(announceErrors = false)
+            emitMessage(
+                if (targetUrl.isBlank()) {
+                    "Loaded direct-only config."
+                } else {
+                    envelope.message?.ifBlank { "Subscription config loaded." } ?: "Subscription config loaded."
+                }
+            )
         }
     }
 
@@ -200,8 +228,13 @@ class HomoscaleViewModel(application: Application) : AndroidViewModel(applicatio
         )
         _uiState.update { it.copy(subscriptions = updated, activeSubscriptionId = activeId) }
         viewModelScope.launch {
-            syncConfig()
-            emitMessage(if (existingIndex >= 0) "Subscription updated." else "Subscription added.")
+            emitMessage(
+                if (existingIndex >= 0) {
+                    "Subscription updated. Load config to apply."
+                } else {
+                    "Subscription added. Load config to apply."
+                }
+            )
         }
     }
 
@@ -216,8 +249,7 @@ class HomoscaleViewModel(application: Application) : AndroidViewModel(applicatio
         )
         _uiState.update { it.copy(subscriptions = updated, activeSubscriptionId = activeId) }
         viewModelScope.launch {
-            syncConfig()
-            emitMessage("Subscription removed.")
+            emitMessage("Subscription removed. Loaded config is unchanged until you load again.")
         }
     }
 
@@ -393,11 +425,14 @@ class HomoscaleViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private suspend fun syncConfig(): String {
-        val activeUrl = _uiState.value.activeSubscription?.url.orEmpty()
+        return syncConfig(subscriptionUrlOverride = _uiState.value.loadedSubscriptionUrl)
+    }
+
+    private suspend fun syncConfig(subscriptionUrlOverride: String): String {
         val configPath = withContext(Dispatchers.IO) {
             ConfigFiles.writeDefaultConfig(
                 appContext,
-                activeUrl,
+                subscriptionUrlOverride,
                 _uiState.value.enableIpv6,
                 _uiState.value.appRouting.mode,
                 _uiState.value.appRouting.includePackages,
@@ -429,6 +464,7 @@ class HomoscaleViewModel(application: Application) : AndroidViewModel(applicatio
         return HomoscaleUiState(
             subscriptions = prefs.subscriptions,
             activeSubscriptionId = prefs.activeSubscriptionId,
+            loadedSubscriptionUrl = prefs.loadedSubscriptionUrl,
             enableIpv6 = prefs.enableIpv6,
             appRouting = AppRoutingUiState(
                 mode = prefs.tunRoutingMode,
@@ -444,6 +480,7 @@ class HomoscaleViewModel(application: Application) : AndroidViewModel(applicatio
     private fun savePreferences(
         subscriptions: List<SubscriptionProfile> = _uiState.value.subscriptions,
         activeSubscriptionId: String? = _uiState.value.activeSubscriptionId,
+        loadedSubscriptionUrl: String = _uiState.value.loadedSubscriptionUrl,
         enableIpv6: Boolean = _uiState.value.enableIpv6,
         tunRoutingMode: String = _uiState.value.appRouting.mode,
         tunIncludePackages: List<String> = _uiState.value.appRouting.includePackages,
@@ -453,6 +490,7 @@ class HomoscaleViewModel(application: Application) : AndroidViewModel(applicatio
             AppPreferencesState(
                 subscriptions = subscriptions,
                 activeSubscriptionId = activeSubscriptionId,
+                loadedSubscriptionUrl = loadedSubscriptionUrl,
                 enableIpv6 = enableIpv6,
                 tunRoutingMode = tunRoutingMode,
                 tunIncludePackages = tunIncludePackages,

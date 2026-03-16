@@ -15,6 +15,7 @@ data class SubscriptionProfile(
 data class AppPreferencesState(
     val subscriptions: List<SubscriptionProfile>,
     val activeSubscriptionId: String?,
+    val loadedSubscriptionUrl: String,
     val enableIpv6: Boolean,
     val tunRoutingMode: String,
     val tunIncludePackages: List<String>,
@@ -35,12 +36,17 @@ class AppPreferencesStore(private val context: Context) {
         val activeId = prefs.getString(KEY_ACTIVE_SUBSCRIPTION_ID, null)
             ?.takeIf { current -> profiles.any { it.id == current } }
             ?: profiles.firstOrNull()?.id
+        val loadedSubscriptionUrl = prefs.getString(KEY_LOADED_SUBSCRIPTION_URL, null)
+            .orEmpty()
+            .trim()
+            .ifBlank { profiles.firstOrNull { it.id == activeId }?.url.orEmpty() }
         val routingMode = loadTunRoutingMode()
         val includePackages = loadTunIncludePackages()
         val excludePackages = loadTunExcludePackages()
         return AppPreferencesState(
             subscriptions = profiles,
             activeSubscriptionId = activeId,
+            loadedSubscriptionUrl = loadedSubscriptionUrl,
             enableIpv6 = enableIpv6,
             tunRoutingMode = routingMode,
             tunIncludePackages = includePackages,
@@ -55,6 +61,7 @@ class AppPreferencesStore(private val context: Context) {
         prefs.edit()
             .putString(KEY_SUBSCRIPTIONS_JSON, serializeProfiles(state.subscriptions).toString())
             .putString(KEY_ACTIVE_SUBSCRIPTION_ID, validActiveId)
+            .putString(KEY_LOADED_SUBSCRIPTION_URL, state.loadedSubscriptionUrl.trim())
             .putBoolean(KEY_ENABLE_IPV6, state.enableIpv6)
             .putString(KEY_TUN_ROUTING_MODE, state.tunRoutingMode)
             .putString(KEY_TUN_INCLUDE_PACKAGES_JSON, serializeStringList(state.tunIncludePackages).toString())
@@ -170,6 +177,7 @@ class AppPreferencesStore(private val context: Context) {
         private const val PREFS = "homoscale"
         private const val KEY_SUBSCRIPTIONS_JSON = "subscriptions_json"
         private const val KEY_ACTIVE_SUBSCRIPTION_ID = "active_subscription_id"
+        private const val KEY_LOADED_SUBSCRIPTION_URL = "loaded_subscription_url"
         private const val KEY_ENABLE_IPV6 = "enable_ipv6"
         private const val KEY_TUN_ROUTING_MODE = "tun_routing_mode"
         private const val KEY_TUN_INCLUDE_PACKAGES_JSON = "tun_include_packages_json"

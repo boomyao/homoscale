@@ -151,6 +151,7 @@ class MainActivity : ComponentActivity() {
                     onSetMode = viewModel::setProxyMode,
                     onSelectProxy = viewModel::selectProxy,
                     onSelectSubscription = viewModel::setActiveSubscription,
+                    onLoadSubscription = viewModel::loadSubscriptionConfig,
                     onSaveSubscription = viewModel::saveSubscription,
                     onDeleteSubscription = viewModel::deleteSubscription,
                     onSetRoutingMode = viewModel::setRoutingMode,
@@ -201,6 +202,7 @@ private fun HomoscaleApp(
     onSetMode: (String) -> Unit,
     onSelectProxy: (String, String) -> Unit,
     onSelectSubscription: (String) -> Unit,
+    onLoadSubscription: () -> Unit,
     onSaveSubscription: (String?, String, String) -> Unit,
     onDeleteSubscription: (String) -> Unit,
     onSetRoutingMode: (String) -> Unit,
@@ -281,6 +283,7 @@ private fun HomoscaleApp(
                         editingProfile = SubscriptionEditorState(profile.id, profile.name, profile.url)
                     },
                     onSelect = onSelectSubscription,
+                    onLoad = onLoadSubscription,
                     onDelete = onDeleteSubscription,
                     onToggleIpv6 = onToggleIpv6,
                 )
@@ -781,6 +784,7 @@ private fun SubscriptionCard(
     onAdd: () -> Unit,
     onEdit: (SubscriptionProfile) -> Unit,
     onSelect: (String) -> Unit,
+    onLoad: () -> Unit,
     onDelete: (String) -> Unit,
     onToggleIpv6: (Boolean) -> Unit,
 ) {
@@ -799,12 +803,25 @@ private fun SubscriptionCard(
                 Column {
                     Text("Subscriptions", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text(
-                        "Manage provider URLs and decide which profile drives the embedded Mihomo config.",
+                        "Select a profile, then load it. Connect reuses the last loaded subscription config until you refresh it.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                FilledActionChip("Add", Icons.Rounded.Add, onAdd)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledActionChip("Load Config", Icons.Rounded.Sync, onLoad)
+                    FilledActionChip("Add", Icons.Rounded.Add, onAdd)
+                }
+            }
+
+            uiState.loadedSubscription?.let { loaded ->
+                OutlinedCard {
+                    Text(
+                        text = "Loaded now: ${loaded.name}",
+                        modifier = Modifier.padding(16.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
 
             Row(
@@ -839,6 +856,7 @@ private fun SubscriptionCard(
                     SubscriptionItem(
                         profile = profile,
                         active = profile.id == uiState.activeSubscriptionId,
+                        loaded = profile.url == uiState.loadedSubscriptionUrl && uiState.loadedSubscriptionUrl.isNotBlank(),
                         onSelect = { onSelect(profile.id) },
                         onEdit = { onEdit(profile) },
                         onDelete = { onDelete(profile.id) },
@@ -1030,6 +1048,7 @@ private fun SelectorCard(
 private fun SubscriptionItem(
     profile: SubscriptionProfile,
     active: Boolean,
+    loaded: Boolean,
     onSelect: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
@@ -1069,8 +1088,13 @@ private fun SubscriptionItem(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (active) {
-                    StatusPill("Active")
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp), horizontalAlignment = Alignment.End) {
+                    if (active) {
+                        StatusPill("Selected")
+                    }
+                    if (loaded) {
+                        StatusPill("Loaded")
+                    }
                 }
             }
 

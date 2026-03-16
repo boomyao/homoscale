@@ -119,6 +119,22 @@ func HomoscaleLoginJSON(configPath *C.char) *C.char {
 	})
 }
 
+//export HomoscaleRefreshSubscriptionJSON
+func HomoscaleRefreshSubscriptionJSON(configPath *C.char) *C.char {
+	path := goString(configPath)
+	cfg, err := loadBridgeConfig(path)
+	if err != nil {
+		return jsonCString(bridgeResponse{Error: err.Error()})
+	}
+	if err := hs.RefreshSubscriptionProvider(cfg); err != nil {
+		return jsonCString(bridgeResponse{Error: err.Error()})
+	}
+	return jsonCString(bridgeResponse{
+		OK:      true,
+		Message: "subscription config refreshed",
+	})
+}
+
 //export HomoscaleLogoutJSON
 func HomoscaleLogoutJSON(configPath *C.char) *C.char {
 	path := goString(configPath)

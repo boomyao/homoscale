@@ -57,7 +57,11 @@ func ensureEngineConfig(cfg *Config) (bool, error) {
 	if tailscaleProxy != nil {
 		payload["proxies"] = []map[string]any{tailscaleProxy}
 	}
-	if strings.TrimSpace(cfg.Engine.SubscriptionURL) == "" {
+	subscriptionProvider, useSubscriptionProvider, err := buildSubscriptionProvider(cfg)
+	if err != nil {
+		return false, err
+	}
+	if !useSubscriptionProvider {
 		payload["proxy-groups"] = []map[string]any{
 			{
 				"name": "PROXY",
@@ -68,10 +72,6 @@ func ensureEngineConfig(cfg *Config) (bool, error) {
 			},
 		}
 	} else {
-		subscriptionProvider, err := buildSubscriptionProvider(cfg)
-		if err != nil {
-			return false, err
-		}
 		payload["proxy-providers"] = map[string]any{
 			"subscription": subscriptionProvider,
 		}
@@ -373,7 +373,7 @@ func injectTailscaleDNSHosts(payload map[string]any, cfg *Config, hosts map[stri
 	}
 }
 
-func buildSubscriptionProvider(cfg *Config) (map[string]any, error) {
+func buildSubscriptionProvider(cfg *Config) (map[string]any, bool, error) {
 	provider := map[string]any{
 		"path": cfg.Engine.SubscriptionPath,
 		"health-check": map[string]any{
@@ -383,17 +383,37 @@ func buildSubscriptionProvider(cfg *Config) (map[string]any, error) {
 		},
 	}
 	if runningOnAndroid() {
-		if err := writeAndroidSubscriptionProvider(cfg); err != nil {
-			return nil, err
+		if !hasUsableAndroidSubscriptionCache(cfg.Engine.SubscriptionPath) {
+			return nil, false, nil
 		}
 		provider["type"] = "file"
-		return provider, nil
+		return provider, true, nil
+	}
+
+	if strings.TrimSpace(cfg.Engine.SubscriptionURL) == "" {
+		return nil, false, nil
 	}
 
 	provider["type"] = "http"
 	provider["url"] = cfg.Engine.SubscriptionURL
 	provider["interval"] = cfg.Engine.SubscriptionInterval
-	return provider, nil
+	return provider, true, nil
+}
+
+func RefreshSubscriptionProvider(cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("config is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.Engine.SubscriptionPath), 0o755); err != nil {
+		return fmt.Errorf("create android subscription dir: %w", err)
+	}
+	if strings.TrimSpace(cfg.Engine.SubscriptionURL) == "" {
+		if err := os.Remove(cfg.Engine.SubscriptionPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove android subscription provider %s: %w", cfg.Engine.SubscriptionPath, err)
+		}
+		return nil
+	}
+	return writeAndroidSubscriptionProvider(cfg)
 }
 
 func writeAndroidSubscriptionProvider(cfg *Config) error {

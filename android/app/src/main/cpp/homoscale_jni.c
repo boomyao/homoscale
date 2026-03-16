@@ -18,6 +18,7 @@ static void *bridge_handle = NULL;
 static bridge_noarg_fn bridge_version = NULL;
 static bridge_arg_fn bridge_status = NULL;
 static bridge_arg_fn bridge_login = NULL;
+static bridge_arg_fn bridge_refresh_subscription = NULL;
 static bridge_arg_fn bridge_logout = NULL;
 static bridge_arg_int_fn bridge_start = NULL;
 static bridge_arg_fn bridge_stop = NULL;
@@ -108,6 +109,7 @@ static int ensure_bridge_loaded(void) {
         bridge_version != NULL &&
         bridge_status != NULL &&
         bridge_login != NULL &&
+        bridge_refresh_subscription != NULL &&
         bridge_logout != NULL &&
         bridge_start != NULL &&
         bridge_stop != NULL &&
@@ -125,6 +127,7 @@ static int ensure_bridge_loaded(void) {
         bridge_version != NULL &&
         bridge_status != NULL &&
         bridge_login != NULL &&
+        bridge_refresh_subscription != NULL &&
         bridge_logout != NULL &&
         bridge_start != NULL &&
         bridge_stop != NULL &&
@@ -148,6 +151,7 @@ static int ensure_bridge_loaded(void) {
     bridge_noarg_fn version = (bridge_noarg_fn) dlsym(handle, "HomoscaleVersionJSON");
     bridge_arg_fn status = (bridge_arg_fn) dlsym(handle, "HomoscaleStatusJSON");
     bridge_arg_fn login = (bridge_arg_fn) dlsym(handle, "HomoscaleLoginJSON");
+    bridge_arg_fn refresh_subscription = (bridge_arg_fn) dlsym(handle, "HomoscaleRefreshSubscriptionJSON");
     bridge_arg_fn logout = (bridge_arg_fn) dlsym(handle, "HomoscaleLogoutJSON");
     bridge_arg_int_fn start = (bridge_arg_int_fn) dlsym(handle, "HomoscaleStartWithTunFDJSON");
     bridge_arg_fn stop = (bridge_arg_fn) dlsym(handle, "HomoscaleStopJSON");
@@ -158,14 +162,14 @@ static int ensure_bridge_loaded(void) {
     bridge_set_snapshot_fn set_interface_snapshot = (bridge_set_snapshot_fn) dlsym(handle, "HomoscaleSetAndroidInterfaceSnapshot");
     bridge_set_snapshot_fn set_installed_apps_snapshot = (bridge_set_snapshot_fn) dlsym(handle, "HomoscaleSetAndroidInstalledAppsSnapshot");
 
-    if (version == NULL || status == NULL || login == NULL || logout == NULL ||
+    if (version == NULL || status == NULL || login == NULL || refresh_subscription == NULL || logout == NULL ||
         start == NULL || stop == NULL || set_proxy_mode == NULL || select_proxy_group == NULL || free_fn == NULL ||
         set_default_route == NULL || set_interface_snapshot == NULL || set_installed_apps_snapshot == NULL) {
         __android_log_print(
                 ANDROID_LOG_ERROR,
                 "homoscale_jni",
-                "dlsym failed: version=%p status=%p login=%p logout=%p start=%p stop=%p setMode=%p select=%p free=%p setRoute=%p setSnapshot=%p setApps=%p",
-                version, status, login, logout, start, stop, set_proxy_mode, select_proxy_group, free_fn, set_default_route, set_interface_snapshot, set_installed_apps_snapshot
+                "dlsym failed: version=%p status=%p login=%p refresh=%p logout=%p start=%p stop=%p setMode=%p select=%p free=%p setRoute=%p setSnapshot=%p setApps=%p",
+                version, status, login, refresh_subscription, logout, start, stop, set_proxy_mode, select_proxy_group, free_fn, set_default_route, set_interface_snapshot, set_installed_apps_snapshot
         );
         dlclose(handle);
         pthread_mutex_unlock(&bridge_mutex);
@@ -176,6 +180,7 @@ static int ensure_bridge_loaded(void) {
     bridge_version = version;
     bridge_status = status;
     bridge_login = login;
+    bridge_refresh_subscription = refresh_subscription;
     bridge_logout = logout;
     bridge_start = start;
     bridge_stop = stop;
@@ -347,6 +352,15 @@ Java_io_homoscale_android_HomoscaleBridge_login(JNIEnv *env, jclass clazz, jstri
         return (*env)->NewStringUTF(env, "{\"ok\":false,\"error\":\"bridge load failed\"}");
     }
     return invoke_string_callback(env, bridge_login, config_path);
+}
+
+JNIEXPORT jstring JNICALL
+Java_io_homoscale_android_HomoscaleBridge_refreshSubscription(JNIEnv *env, jclass clazz, jstring config_path) {
+    (void) clazz;
+    if (!ensure_bridge_loaded()) {
+        return (*env)->NewStringUTF(env, "{\"ok\":false,\"error\":\"bridge load failed\"}");
+    }
+    return invoke_string_callback(env, bridge_refresh_subscription, config_path);
 }
 
 JNIEXPORT jstring JNICALL
